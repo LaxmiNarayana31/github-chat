@@ -2,8 +2,13 @@ import os
 import glob
 import subprocess
 
-from adalflow.core.types import Document
+import adalflow as adal
+from adalflow.utils import printc
+from adalflow.core.db import LocalDB
+from adalflow.core.types import Document, List
+from adalflow.components.data_process import TextSplitter, ToEmbeddings
 
+from app.config import config
 
 # Clone github repo to local path
 def download_github_repo(repo_url: str, local_path: str):
@@ -46,3 +51,37 @@ def read_all_documents(path: str):
             except Exception as e:
                 print(f"Error reading {file_path}: {e}")
     return documents
+
+# Prepare data pipeline for embedding
+def prepare_data_pipeline():
+    splitter = TextSplitter(**config["text_splitter"])
+    embedder = adal.Embedder(
+        model_client=config["embedder"]["model_client"](),
+        model_kwargs=config["embedder"]["model_kwargs"],
+    )
+    embedder_transformer = ToEmbeddings(
+        embedder=embedder, batch_size=config["embedder"]["batch_size"]
+    )
+    return adal.Sequential(splitter, embedder_transformer)
+
+# Transform documents and save to db
+def transform_documents_and_save_to_db(documents: List[Document], db_path: str) -> LocalDB:
+    transformer = prepare_data_pipeline()
+    db = LocalDB()
+    db.register_transformer(transformer=transformer, key="split_and_embed")
+    db.load(documents)
+    db.transform(key="split_and_embed")
+
+    transformed_docs = db.get_transformed_data(key="split_and_embed")
+    if not transformed_docs:
+        printc("No embedded docs — skipping DB save.")
+        return db
+
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    db.transformer_setups = {}
+    try:
+        LocalDB.save_state(db, filepath=db_path)
+    except Exception as e:
+        printc(f"Failed saving DB: {e}")
+    return db
+
