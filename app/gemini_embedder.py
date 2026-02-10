@@ -1,10 +1,12 @@
 import os
+import backoff
 import logging
 from typing import Dict, Sequence, Optional, Any, List
 
 from adalflow.core.model_client import ModelClient
 from adalflow.core.types import ModelType, Embedding, EmbedderOutput
 import google.generativeai as genai
+from google.api_core.exceptions import InternalServerError, BadRequest, GoogleAPICallError
 
 log = logging.getLogger(__name__)
 
@@ -54,3 +56,32 @@ class GeminiEmbedderClient(ModelClient):
         else:
             raise ValueError(f"model_type {model_type} is not supported. This client only supports EMBEDDER.")
         return final_model_kwargs
+
+    @backoff.on_exception(
+        backoff.expo,
+        (InternalServerError, BadRequest, GoogleAPICallError),
+        max_time=5,
+    )
+    def call(self, api_kwargs: Dict = {}, model_type: ModelType = ModelType.UNDEFINED):
+        """Call the Gemini embedding API."""
+        if model_type == ModelType.EMBEDDER:
+            model = api_kwargs.get("model", "models/text-embedding-004")
+            input_texts = api_kwargs.get("input", [])
+            
+            if not input_texts:
+                log.warning("No input texts provided for embedding")
+                return []
+            
+            # Use embed_content for batch embedding
+            embeddings = []
+            for text in input_texts:
+                result = genai.embed_content(
+                    model=model,
+                    content=text,
+                    task_type="retrieval_document"
+                )
+                embeddings.append(result)
+            
+            return embeddings
+        else:
+            raise ValueError(f"model_type {model_type} is not supported. This client only supports EMBEDDER.")
