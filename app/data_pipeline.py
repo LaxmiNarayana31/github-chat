@@ -6,6 +6,7 @@ import adalflow as adal
 from adalflow.utils import printc
 from adalflow.core.db import LocalDB
 from adalflow.core.types import Document, List
+from adalflow.utils import get_adalflow_default_root_path
 from adalflow.components.data_process import TextSplitter, ToEmbeddings
 
 from app.config import config
@@ -85,3 +86,53 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
         printc(f"Failed saving DB: {e}")
     return db
 
+# Database manager
+class DatabaseManager:
+    def __init__(self):
+        self.db = None
+        self.repo_paths = None
+
+    # Prepare database
+    def prepare_database(self, repo_url_or_path: str):
+        self.db = None
+        self.repo_paths = None
+        self._create_repo(repo_url_or_path)
+        return self.prepare_db_index()
+
+    # Create repo
+    def _create_repo(self, repo_url_or_path: str):
+        printc(f"Preparing repo storage for {repo_url_or_path}...")
+        root_path = get_adalflow_default_root_path()
+        os.makedirs(root_path, exist_ok=True)
+
+        if repo_url_or_path.startswith("http"):
+            repo_name = repo_url_or_path.split("/")[-1].replace(".git", "")
+            save_repo_dir = os.path.join(root_path, "repos", repo_name)
+            download_github_repo(repo_url_or_path, save_repo_dir)
+        else:
+            repo_name = os.path.basename(repo_url_or_path)
+            save_repo_dir = repo_url_or_path
+
+        save_db_file = os.path.join(root_path, "databases", f"{repo_name}.pkl")
+        os.makedirs(save_repo_dir, exist_ok=True)
+        os.makedirs(os.path.dirname(save_db_file), exist_ok=True)
+        self.repo_paths = {"save_repo_dir": save_repo_dir, "save_db_file": save_db_file}
+        printc(f"Repo paths: {self.repo_paths}")
+
+    # Prepare database index
+    def prepare_db_index(self):
+        save_db = self.repo_paths["save_db_file"]
+        if os.path.exists(save_db) and os.path.getsize(save_db) > 0:
+            printc("Trying to load existing database...")
+            try:
+                self.db = LocalDB.load_state(save_db)
+                docs = self.db.get_transformed_data(key="split_and_embed")
+                if docs:
+                    return docs
+            except Exception:
+                printc("Failed load/empty — reindexing.")
+
+        printc("Creating new database...")
+        docs = read_all_documents(self.repo_paths["save_repo_dir"])
+        self.db = transform_documents_and_save_to_db(docs, save_db)
+        return self.db.get_transformed_data(key="split_and_embed")
