@@ -66,6 +66,32 @@ async def health_check():
         "version": "1.0.0"
     }
 
+
+# Set conversation context when switching between chats
+@app.post("/set-context")
+async def set_context(messages: list[dict]):
+    """Restore conversation context when switching to a different chat"""
+    try:
+        # Clear existing memory first
+        rag.memory.current_conversation.dialog_turns.clear()
+        
+        # Rebuild memory from provided messages
+        for i in range(0, len(messages) - 1, 2):
+            if i + 1 < len(messages):
+                user_msg = messages[i]
+                assistant_msg = messages[i + 1]
+                if user_msg.get("role") == "user" and assistant_msg.get("role") == "assistant":
+                    rag.memory.add_dialog_turn(
+                        uq=user_msg.get("content", ""),
+                        ar=assistant_msg.get("content", "")
+                    )
+        
+        print(f"Context restored with {len(rag.memory.current_conversation.dialog_turns)} turns")
+        return {"status": "success", "turns": len(rag.memory.current_conversation.dialog_turns)}
+    except Exception as e:
+        print(f"Error setting context: {e}")
+        return {"status": "error", "message": str(e)}
+
 # Run the app
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
