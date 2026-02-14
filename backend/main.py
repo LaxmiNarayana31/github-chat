@@ -3,13 +3,16 @@ import sys
 from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI
+import adalflow as adal
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 # Add project root to Python path so 'app' module can be found
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.rag import RAG
+from backend.dto import QueryRequest, DocumentMetadata, Document, QueryResponse
 
 load_dotenv(verbose=True)
 
@@ -28,6 +31,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Initialize RAG component
+try:
+    # Set up adalflow environment
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    adal.setup_env()
+    rag = RAG()
+    print("Successfully initialized RAG component")
+except Exception as e:
+    print(f"Error initializing RAG component: {e}")
+    raise RuntimeError(f"Failed to initialize RAG component: {e}")
 
 # Root endpoint with API information
 @app.get("/")
