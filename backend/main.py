@@ -3,16 +3,13 @@ import sys
 from datetime import datetime, timezone
 
 import uvicorn
-import adalflow as adal
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 # Add project root to Python path so 'app' module can be found
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.rag import RAG
-from backend.dto import QueryRequest, DocumentMetadata, Document, QueryResponse
 
 load_dotenv(verbose=True)
 
