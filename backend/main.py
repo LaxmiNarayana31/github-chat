@@ -66,6 +66,17 @@ async def health_check():
         "version": "1.0.0"
     }
 
+# Clear memory endpoint for new chat sessions
+@app.post("/clear-memory")
+async def clear_memory():
+    """Clear the RAG conversation memory for a new chat session"""
+    try:
+        rag.memory.current_conversation.dialog_turns.clear()
+        print("Memory cleared for new chat session")
+        return {"status": "success", "message": "Memory cleared"}
+    except Exception as e:
+        print(f"Error clearing memory: {e}")
+        return {"status": "error", "message": str(e)}
 
 # Set conversation context when switching between chats
 @app.post("/set-context")
@@ -91,6 +102,40 @@ async def set_context(messages: list[dict]):
     except Exception as e:
         print(f"Error setting context: {e}")
         return {"status": "error", "message": str(e)}
+
+# Query endpoint to query a GitHub repository with RAG
+@app.post("/query", response_model=QueryResponse)
+async def query_repository(request: QueryRequest):
+    """Query a GitHub repository with RAG"""
+    try:
+        # Prepare retriever for the repository
+        rag.prepare_retriever(request.repo_url)
+        
+        # Get response and retrieved documents
+        response, retrieved_documents = rag(request.query)
+        
+        # Format response
+        return QueryResponse(
+            rationale=response.rationale if hasattr(response, 'rationale') else "",
+            answer=response.answer if hasattr(response, 'answer') else response.raw_response,
+            contexts=[
+                Document(
+                    text=doc.text,
+                    meta_data=DocumentMetadata(
+                        file_path=doc.meta_data.get('file_path', ''),
+                        type=doc.meta_data.get('type', ''),
+                        is_code=doc.meta_data.get('is_code', False),
+                        is_implementation=doc.meta_data.get('is_implementation', False),
+                        title=doc.meta_data.get('title', '')
+                    )
+                )
+                for doc in retrieved_documents[0].documents
+            ] if retrieved_documents and retrieved_documents[0].documents else []
+        )
+    except Exception as e:
+        error_msg = f"Error processing query: {str(e)}"
+        print(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 # Run the app
 if __name__ == "__main__":
