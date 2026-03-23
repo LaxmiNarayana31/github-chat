@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.rag import RAG
-from backend.dto import QueryRequest, DocumentMetadata, Document, QueryResponse
+from backend.dto import QueryRequest, InitRequest, DocumentMetadata, Document, QueryResponse
 
 load_dotenv(verbose=True)
 
@@ -37,7 +37,6 @@ try:
     # Set up adalflow environment
     gemini_api_key = os.getenv("GEMINI_API_KEY")
     groq_api_key = os.getenv("GROQ_API_KEY")
-    adal.setup_env()
     rag = RAG()
     print("Successfully initialized RAG component")
 except Exception as e:
@@ -103,14 +102,25 @@ async def set_context(messages: list[dict]):
         print(f"Error setting context: {e}")
         return {"status": "error", "message": str(e)}
 
+# Initialize repository endpoint - prepare embeddings
+@app.post("/init")
+async def init_repository(request: InitRequest):
+    """Initialize a GitHub repository: clone, chunk, and create embeddings."""
+    try:
+        print(f"Initializing repository: {request.repo_url}")
+        rag.prepare_retriever(request.repo_url)
+        print(f"Repository initialized successfully: {request.repo_url}")
+        return {"status": "success", "message": f"Repository {request.repo_url} initialized"}
+    except Exception as e:
+        error_msg = f"Error initializing repository: {str(e)}"
+        print(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
+
 # Query endpoint to query a GitHub repository with RAG
 @app.post("/query", response_model=QueryResponse)
 async def query_repository(request: QueryRequest):
     """Query a GitHub repository with RAG"""
     try:
-        # Prepare retriever for the repository
-        rag.prepare_retriever(request.repo_url)
-        
         # Get response and retrieved documents
         response, retrieved_documents = rag(request.query)
         
