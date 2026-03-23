@@ -13,12 +13,12 @@ config = {
         # Use custom GeminiEmbedderClient for cloud-based embeddings
         "model_client": lambda: GeminiEmbedderClient(api_key=os.getenv("GEMINI_API_KEY")),
         "model_kwargs": {
-            "model": "models/text-embedding-004",
+            "model": "gemini-embedding-001",
         },
         "dimensions": 768,
         "encoding_format": "float",
     },
-    "retriever": {"top_k": 7},
+    "retriever": {"top_k": 3},
     "generator": {
         "model_client": lambda: GroqAPIClient(api_key=os.getenv("GROQ_API_KEY")),
         "model_kwargs": {
@@ -29,7 +29,7 @@ config = {
     },
     "text_splitter": {
         "split_by": "word",
-        "chunk_size": 400,
+        "chunk_size": 200,
         "chunk_overlap": 100,
     },
 }
