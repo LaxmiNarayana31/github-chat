@@ -118,8 +118,9 @@ class RAG(adal.Component):
         )
 
     def call(self, query: str) -> Any:
-        # Embed query and extract vectors
-        embed_output = self.embedder(query)
+        printc(f"RAG: Processing query: '{query}'", color="green")
+        # Embed query and extract vectors using RETRIEVAL_QUERY task type
+        embed_output = self.embedder(query, model_kwargs={"task_type": "RETRIEVAL_QUERY"})
         if not embed_output.data:
             return {"rationale":"", "answer":""}, []
         vectors = [emb.embedding for emb in embed_output.data]
@@ -128,6 +129,8 @@ class RAG(adal.Component):
         # Search (Semantic Search)
         retrieved = self.retriever(query_vec)
         retrieved[0].documents = [self.transformed_docs[i] for i in retrieved[0].doc_indices]
+        
+        printc(f"Retrieved {len(retrieved[0].documents)} documents", color="green")
 
         # Generate
         prompt_kwargs = {
