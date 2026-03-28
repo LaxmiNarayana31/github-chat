@@ -5,6 +5,9 @@ class QueryRequest(BaseModel):
     repo_url: str
     query: str
 
+class InitRequest(BaseModel):
+    repo_url: str
+
 class DocumentMetadata(BaseModel):
     file_path: str
     type: str
