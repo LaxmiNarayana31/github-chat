@@ -122,7 +122,7 @@ class RAG(adal.Component):
         # Embed query and extract vectors using RETRIEVAL_QUERY task type
         embed_output = self.embedder(query, model_kwargs={"task_type": "RETRIEVAL_QUERY"})
         if not embed_output.data:
-            return {"rationale":"", "answer":""}, []
+            return RAGAnswer(rationale="", answer=""), []
         vectors = [emb.embedding for emb in embed_output.data]
         query_vec = np.asarray(vectors, dtype="float32")
 
