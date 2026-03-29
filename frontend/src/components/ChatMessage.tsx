@@ -42,6 +42,12 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }));
   };
 
+  // Convert literal \n sequences into real newlines for markdown rendering
+  const normalizeMarkdown = (text: string): string => {
+    if (!text) return text;
+    return text.replace(/\\n/g, '\n');
+  };
+
   const isUser = role === "user";
 
   return (
@@ -81,7 +87,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             </div>
           ) : (
             <div className={`prose prose-sm max-w-none ${isUser ? "prose-invert" : "prose-invert"}`}>
-              <ReactMarkdown>{content}</ReactMarkdown>
+              <ReactMarkdown>{normalizeMarkdown(content)}</ReactMarkdown>
             </div>
           )}
         </div>
@@ -103,7 +109,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
             {showRationale && (
               <div className="mt-2 p-4 bg-gray-800/50 rounded-lg border border-gray-700">
                 <div className="prose prose-sm prose-invert max-w-none">
-                  <ReactMarkdown>{rationale}</ReactMarkdown>
+                  <ReactMarkdown>{normalizeMarkdown(rationale)}</ReactMarkdown>
                 </div>
               </div>
             )}
