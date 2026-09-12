@@ -1,0 +1,62 @@
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info/
+
+# Testing and linting caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment variables and secrets
+.env
+.env.*
+*.env
+.env.local
+.env.*.local
+.streamlit/secrets.toml
+!.env.example
+!backend/.env.example
+
+# Frontend dependencies and build outputs
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.vite/
+frontend/.vite/
+
+# Vector stores and database files
+qdrant_storage/
+backend/qdrant_storage/
+*.db
+*.sqlite
+*.sqlite3
+.fastembed_cache/
+clone_cache/
+temp_repo/
+scratch_*/
+
+# IDE and operating system files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

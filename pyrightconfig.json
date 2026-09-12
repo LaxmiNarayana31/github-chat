@@ -1,0 +1,12 @@
+{
+  "include": [
+    "backend",
+    "streamlit_app"
+  ],
+  "extraPaths": [
+    ".",
+    "backend"
+  ],
+  "venvPath": "backend",
+  "venv": ".venv"
+}
