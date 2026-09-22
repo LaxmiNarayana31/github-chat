@@ -40,6 +40,7 @@ frontend/dist/
 frontend/.vite/
 
 # Vector stores and database files
+data/
 qdrant_storage/
 backend/qdrant_storage/
 *.db
