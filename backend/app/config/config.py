@@ -14,8 +14,8 @@ from backend.app.config.constants import (
     MAX_FILE_SIZE_BYTES,
     MIN_FILE_CHAR_LENGTH,
 )
-from backend.app.models.gemini_embedder import GeminiEmbedderClient
-from backend.app.models.groq_client import (
+from backend.app.llm_models.gemini_embedder import GeminiEmbedderClient
+from backend.app.llm_models.groq_client import (
     DEFAULT_GENERATION_MODELS,
     CustomGroqClient,
     MultiProviderLLMClient,
@@ -24,14 +24,7 @@ from backend.app.utils.env_utils import build_postgres_url
 
 log = logging.getLogger(__name__)
 
-# Ensure environment is loaded from backend/.env or root/.env before reading os.getenv
-_this_dir = os.path.dirname(os.path.abspath(__file__))
-_backend_dir = os.path.dirname(_this_dir)
-_root_dir = os.path.dirname(_backend_dir)
-for _env_path in [os.path.join(_backend_dir, ".env"), os.path.join(_root_dir, ".env")]:
-    if os.path.exists(_env_path):
-        load_dotenv(_env_path, override=False)
-load_dotenv(verbose=False)
+load_dotenv()
 
 # Default configuration constants
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"
