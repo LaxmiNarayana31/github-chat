@@ -1,19 +1,28 @@
-"""Entry point for GithubChat FastAPI backend application."""
+import os
+from pathlib import Path
+import sys
+
+# Ensure both project root and backend dir are in sys.path when running from any CWD
+_backend_dir = Path(__file__).resolve().parent
+_root_dir = _backend_dir.parent
+for _p in [str(_root_dir), str(_backend_dir)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from contextlib import asynccontextmanager
 import logging
-import os
-import sys
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 import uvicorn
 
 from backend.app.api.health_routes import router as health_router
 from backend.app.api.rag_routes import router as rag_router
 from backend.app.services.rag_service import RAGService
+from backend.app.services.redis_manager import RedisCacheManager
 from backend.app.utils.env_utils import check_api_keys
 
 logging.basicConfig(
@@ -37,6 +46,14 @@ async def lifespan(app: FastAPI):
             log.warning("GROQ_API_KEY is not configured. Set it in .env or environment variables.")
     except Exception as key_err:
         log.warning(f"Could not check API keys on startup: {key_err}")
+
+    # Reconcile orphaned background jobs from prior server crashes/restarts
+    try:
+        reconciled = RedisCacheManager.get_instance().reconcile_orphaned_jobs()
+        if reconciled > 0:
+            log.info(f"Startup: Reconciled {reconciled} interrupted background jobs.")
+    except Exception as recon_err:
+        log.debug(f"Startup job reconciliation skipped: {recon_err}")
 
     # Pre-warm Memori Labs memory layer and LangGraph RAG on server startup
     try:
@@ -68,6 +85,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# High-performance GZip compression middleware (compresses responses > 1KB by 70-85%)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # Global Exception Handlers
