@@ -62,6 +62,17 @@ IGNORED_DIRS: Set[str] = {
     ".local",
     "tmp",
     "temp",
+    # Mega-Repository Noise & Non-Target Hardware Directories (Linux / Monorepos)
+    "firmware",
+    "staging",
+    "samples",
+    "translations",
+    "csky",
+    "m68k",
+    "microblaze",
+    "nios2",
+    "parisc",
+    "xtensa",
 }
 
 # ==============================================================================
@@ -94,13 +105,25 @@ IGNORED_FILES: Set[str] = {
     "desktop.ini",
 }
 
-# File extensions for minified or bundled assets to skip
+# File extensions for minified or bundled assets and firmware binaries to skip
 IGNORED_FILE_SUFFIXES: tuple = (
     ".min.js",
     ".min.css",
     ".bundle.js",
     ".bundle.css",
     ".map",
+    # Binary blobs & compiled device trees common in C/C++/Kernel projects
+    ".fw",
+    ".bin",
+    ".hex",
+    ".dtb",
+    ".dtbo",
+    ".dts",
+    ".o",
+    ".a",
+    ".so",
+    ".dylib",
+    ".dll",
 )
 
 # ==============================================================================
