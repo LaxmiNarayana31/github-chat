@@ -78,7 +78,7 @@ graph TB
     AgenticRAG -->|"Recall & Commit Dialog Turns"| MemoriSQL
 ```
 
-For complete technical specifications, see [ARCHITECTURE.md](file:///d:/Projects/Personal-Projects/github-chat/ARCHITECTURE.md).
+For complete technical specifications, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
