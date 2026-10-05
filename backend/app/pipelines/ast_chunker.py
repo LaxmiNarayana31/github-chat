@@ -7,6 +7,11 @@ from typing import Any, List, Optional
 
 from adalflow.core.types import Document as AdalDocument
 
+try:
+    import tree_sitter_languages
+except ImportError:
+    tree_sitter_languages = None
+
 log = logging.getLogger(__name__)
 
 
@@ -32,6 +37,11 @@ class ASTChunker:
             chunks = self._chunk_python(content, file_path)
             if chunks:
                 return chunks
+
+        # Universal Tree-sitter AST parsing for enterprise polyglot codebases
+        ts_chunks = self._chunk_tree_sitter(content, file_path, ext)
+        if ts_chunks:
+            return ts_chunks
 
         # Fallback to multi-language structural regex chunker
         return self._chunk_structural_code(content, file_path, ext)
@@ -220,6 +230,155 @@ class ASTChunker:
 
         return chunks
 
+    def _chunk_tree_sitter(
+        self,
+        content: str,
+        file_path: str,
+        ext: str,
+    ) -> List[AdalDocument]:
+        """Universal Tree-sitter AST parser for high-precision syntax chunking across enterprise languages."""
+        lang_map = {
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".mjs": "javascript",
+            ".cjs": "javascript",
+            ".ts": "typescript",
+            ".tsx": "tsx",
+            ".mts": "typescript",
+            ".cts": "typescript",
+            ".go": "go",
+            ".rs": "rust",
+            ".java": "java",
+            ".cpp": "cpp",
+            ".hpp": "cpp",
+            ".cc": "cpp",
+            ".cxx": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".cs": "c_sharp",
+        }
+        lang_name = lang_map.get(ext)
+        if not lang_name or tree_sitter_languages is None:
+            return []
+
+        try:
+            parser = tree_sitter_languages.get_parser(lang_name)
+        except Exception as e:
+            log.debug(f"Tree-sitter parser unavailable for {lang_name}: {e}")
+            return []
+
+        try:
+            tree = parser.parse(content.encode("utf-8", errors="replace"))
+        except Exception as e:
+            log.warning(f"Tree-sitter parse error in {file_path}: {e}")
+            return []
+
+        lines = content.splitlines()
+        if not lines:
+            return []
+
+        comment_char = "#" if ext in (".py", ".sh", ".rb", ".yaml", ".yml") else "//"
+
+        # Extract import headers
+        import_lines = [
+            l.strip()
+            for l in lines[:30]
+            if re.match(r"^(?:import|#include|package|using|from|use)\b", l.strip())
+        ]
+        imports_summary = " | ".join(import_lines[:5]) if import_lines else ""
+
+        declaration_types = {
+            "function_declaration",
+            "method_definition",
+            "method_declaration",
+            "class_declaration",
+            "interface_declaration",
+            "type_alias_declaration",
+            "type_declaration",
+            "function_item",
+            "impl_item",
+            "struct_item",
+            "trait_item",
+            "enum_item",
+            "enum_declaration",
+            "class_specifier",
+            "struct_specifier",
+            "function_definition",
+        }
+
+        chunks: List[AdalDocument] = []
+
+        def extract_symbol_info(node: Any) -> tuple[str, str]:
+            sym_name = ""
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                sym_name = name_node.text.decode("utf-8", errors="replace")
+            else:
+                for c in node.children:
+                    if c.type in ("identifier", "type_identifier"):
+                        sym_name = c.text.decode("utf-8", errors="replace")
+                        break
+
+            sym_type = "function" if "function" in node.type or "method" in node.type else "class"
+            if "interface" in node.type:
+                sym_type = "interface"
+            elif "struct" in node.type:
+                sym_type = "struct"
+            return sym_name or "symbol", sym_type
+
+        # Scan top-level nodes and exported statements
+        target_nodes = []
+        for child in tree.root_node.children:
+            if child.type == "export_statement":
+                for sub in child.children:
+                    if sub.type in declaration_types:
+                        target_nodes.append(sub)
+            elif child.type in declaration_types:
+                target_nodes.append(child)
+
+        for node in target_nodes:
+            start_line = node.start_point[0] + 1
+            end_line = node.end_point[0] + 1
+            chunk_slice = lines[start_line - 1 : end_line]
+            raw_text = "\n".join(chunk_slice).strip()
+
+            if len(raw_text) < self.min_chunk_chars:
+                continue
+
+            sym_name, sym_type = extract_symbol_info(node)
+
+            if len(raw_text) > self.max_chunk_chars:
+                chunks.extend(
+                    self._subdivide_large_code(
+                        text=raw_text,
+                        file_path=file_path,
+                        symbol_name=sym_name,
+                        symbol_type=sym_type,
+                        start_line=start_line,
+                        comment_char=comment_char,
+                    )
+                )
+            else:
+                header = f"{comment_char} [Context: {file_path} | Scope: {sym_name} | Lines: {start_line}-{end_line}]"
+                if imports_summary:
+                    header += f"\n{comment_char} Context Imports: {imports_summary}"
+                contextual_text = f"{header}\n{raw_text}"
+                chunks.append(
+                    AdalDocument(
+                        text=contextual_text,
+                        meta_data={
+                            "file_path": file_path,
+                            "symbol_name": sym_name,
+                            "symbol_type": sym_type,
+                            "line_range": [start_line, end_line],
+                            "is_code": True,
+                            "title": f"{file_path}:{start_line}-{end_line} ({sym_name})",
+                        },
+                    )
+                )
+
+        return chunks
+
     def _chunk_structural_code(
         self,
         content: str,
@@ -377,3 +536,46 @@ class ASTChunker:
             if end >= total_lines:
                 break
         return chunks
+
+    @staticmethod
+    def fold_code_skeleton(code: str, ext: str = ".py") -> str:
+        """Compress large code files into folded AST interface skeletons for secondary prompt contexts."""
+        if not code or not code.strip():
+            return ""
+
+        clean_ext = f".{ext.lstrip('.')}".lower()
+
+        # Python AST folding
+        if clean_ext == ".py":
+            try:
+                tree = ast.parse(code)
+                lines = []
+                for node in tree.body:
+                    if isinstance(node, ast.ClassDef):
+                        lines.append(f"class {node.name}:")
+                        for item in node.body:
+                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                                doc = ast.get_docstring(item)
+                                doc_line = f'        """{doc}"""\n' if doc else ""
+                                lines.append(f"    def {item.name}(...): ...\n{doc_line}".rstrip())
+                    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        doc = ast.get_docstring(node)
+                        doc_line = f'    """{doc}"""\n' if doc else ""
+                        lines.append(f"def {node.name}(...): ...\n{doc_line}".rstrip())
+                if lines:
+                    return "\n".join(lines)
+            except Exception:
+                pass
+
+        # Structural regex signature folding for other languages
+        sig_pattern = re.compile(
+            r"^\s*(?:export\s+)?(?:public|private|protected|static|\s)*(?:async\s+)?(?:function|class|interface|struct|def|fn|func)\s+([A-Za-z0-9_$]+)[^;{]*",
+            re.MULTILINE,
+        )
+        matches = sig_pattern.findall(code)
+        if matches:
+            skeleton_lines = [f"// {m} {{ ... }}" for m in matches[:15]]
+            return "\n".join(skeleton_lines)
+
+        code_lines = code.splitlines()
+        return "\n".join(code_lines[:10]) + "\n// ... [remaining body folded for context budget]"
