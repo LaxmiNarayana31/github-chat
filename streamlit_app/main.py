@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 import traceback
-from typing import Any, Optional
+from typing import Any
 import uuid
 import warnings
 
