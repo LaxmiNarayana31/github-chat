@@ -1,10 +1,9 @@
 """Hierarchical Repository Map with PageRank ranking inspired by Aider and GitHub Copilot Workspace."""
 
 import logging
-import os
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from adalflow.core.types import Document as AdalDocument
 
@@ -22,16 +21,34 @@ class RepoMapGenerator:
         self.pagerank_scores: Dict[str, float] = {}
 
     def build_from_chunks(self, chunks: List[AdalDocument]) -> 'RepoMapGenerator':
-        """Construct dependency graph from chunk metadata (symbols, paths, and imports)."""
+        """Construct cross-file symbol reference graph from chunk symbols, imports, and identifier calls."""
         self.graph.clear()
         self.file_symbols.clear()
 
+        # For mega-repositories (>5,000 chunks), prioritize architectural declarations and public headers
+        # to guarantee sub-second PageRank computation and prevent memory exhaustion
+        if len(chunks) > 5000:
+            def _chunk_priority(c: AdalDocument):
+                m = c.meta_data or {}
+                fp = m.get("file_path", "")
+                st = m.get("symbol_type", "")
+                is_header = fp.endswith((".h", ".hpp", ".d.ts", ".proto"))
+                is_root = "/" not in fp or fp.count("/") <= 2
+                is_decl = st in ("class", "interface", "struct", "module")
+                return (1 if is_decl else 0, 1 if is_header else 0, 1 if is_root else 0)
+
+            candidate_chunks = sorted(chunks, key=_chunk_priority, reverse=True)[:5000]
+        else:
+            candidate_chunks = chunks
+
         import_pattern = re.compile(
-            r"^(?:from\s+([a-zA-Z0-9_\.]+)\s+import|import\s+([a-zA-Z0-9_\.]+)|#include\s+[\"<]([a-zA-Z0-9_\./\\]+)[\">]|require\(['\"]([a-zA-Z0-9_\./\\]+)['\"]\))",
+            r"^(?:from\s+([a-zA-Z0-9_\.]+)\s+import|import\s+([a-zA-Z0-9_\.]+)|#include\s+[\"<]([a-zA-Z0-9_\./\\]+)[\">]|require\(['\"]([a-zA-Z0-9_\./\\]+)['\"]|use\s+([a-zA-Z0-9_:]+))",
             re.MULTILINE,
         )
 
-        for doc in chunks:
+        # Pass 1: Build symbol declaration registry
+        symbol_to_file: Dict[str, str] = {}
+        for doc in candidate_chunks:
             meta = doc.meta_data or {}
             file_path = meta.get("file_path", "")
             if not file_path:
@@ -41,7 +58,7 @@ class RepoMapGenerator:
             symbol_type = meta.get("symbol_type")
             line_range = meta.get("line_range")
 
-            if symbol_name and symbol_type in ["function", "method", "class", "declaration"]:
+            if symbol_name and symbol_type in ["function", "method", "class", "declaration", "interface", "struct"]:
                 self.file_symbols[file_path].append(
                     {
                         "name": symbol_name,
@@ -49,16 +66,35 @@ class RepoMapGenerator:
                         "lines": line_range,
                     }
                 )
+                # Register clean identifier for cross-file call resolution
+                clean_sym = symbol_name.split(".")[-1]
+                if len(clean_sym) >= 3 and clean_sym not in ("self", "args", "kwargs", "test"):
+                    symbol_to_file[clean_sym] = file_path
 
-            # Extract imports to create graph edges
+        # Pass 2: Extract explicit imports and cross-file symbol call edges
+        identifier_pattern = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b")
+        for doc in candidate_chunks:
+            meta = doc.meta_data or {}
+            file_path = meta.get("file_path", "")
+            if not file_path:
+                continue
+
             text = doc.text or ""
+
+            # Check explicit import declarations
             matches = import_pattern.findall(text)
             for m in matches:
                 imported = next((item for item in m if item), "")
                 if imported:
-                    # Map imported module name to potential file node
                     imported_clean = imported.replace(".", "/").split("/")[-1]
                     self.graph[file_path].add(imported_clean)
+
+            # Check cross-file symbol references (call graph / reference edges)
+            tokens = set(identifier_pattern.findall(text))
+            for tok in tokens:
+                target_file = symbol_to_file.get(tok)
+                if target_file and target_file != file_path:
+                    self.graph[file_path].add(target_file)
 
         self._compute_pagerank()
         return self

@@ -10,9 +10,12 @@ Implements an autonomous, multi-step Agentic RAG workflow using LangGraph:
 7. Memori Labs SQL Memory: Commits conversational & semantic knowledge to PostgreSQL / SQLite.
 """
 
+import concurrent.futures
 import json
 import logging
 import re
+import os
+from pathlib import Path
 from typing import Any, Dict, Iterator, List, Literal, Optional, TypedDict, cast
 
 from adalflow.core.types import Document as AdalDocument
@@ -20,9 +23,11 @@ from langgraph.graph import END, START, StateGraph
 
 from backend.app.config.config import config
 from backend.app.embeddings.qdrant_manager import QdrantManager
+from backend.app.pipelines.ast_chunker import ASTChunker
 from backend.app.prompts.system_prompt import SYSTEM_PROMPT
 from backend.app.services.memory_manager import MemoriManager
 from backend.app.services.redis_manager import RedisCacheManager
+from backend.app.services.reranker_service import RerankerService
 
 log = logging.getLogger(__name__)
 
@@ -233,6 +238,20 @@ class LangGraphAgenticRAG:
             log.info("Agent Router: Fast-path repo_overview")
             return {"route": "repo_overview", "effective_query": query}
 
+        # Fast heuristic checks for code search to save a 500ms LLM router roundtrip
+        code_patterns = [
+            r"`[^`]+`",
+            r"\b(def|class|function|fn|func|const|var|let|import|from|struct|impl|interface)\s+[A-Za-z_]",
+            r"\b(where\s+is|how\s+does|how\s+to|find|locate|fix|bug|issue|error|traceback|exception)\b",
+            r"\b\w+\.(py|js|ts|tsx|go|rs|c|cpp|h|java|cs|rb|json|yaml|yml)\b",
+            r"\b[A-Za-z_][A-Za-z0-9_]*\(\)",
+        ]
+        if any(re.search(pat, query, re.IGNORECASE) for pat in code_patterns):
+            log.info("Agent Router: Fast-path code_search")
+            history = state.get("conversation_history") or []
+            effective_query = self._contextualize_query(query, history) if history else query
+            return {"route": "code_search", "effective_query": effective_query}
+
         # LLM Router for nuanced queries
         system_prompt = (
             "You are an expert query router for a GitHub Codebase RAG system. "
@@ -266,58 +285,170 @@ class LangGraphAgenticRAG:
         return {"route": route, "effective_query": effective_query}
 
 
+    @staticmethod
+    def _extract_symbol_candidates(query: str) -> List[str]:
+        """Extract function/class/method identifier names for deterministic symbol jump search."""
+        candidates: List[str] = []
+        # Pattern 1: Explicit backticked symbols `symbol_name`
+        candidates.extend(re.findall(r"`([A-Za-z_][A-Za-z0-9_]*)`", query))
+        # Pattern 2: Explicit declaration keywords like def foo, class Bar, function baz
+        decl_matches = re.findall(
+            r"(?:def|class|fn|func|function|method|symbol|interface|struct)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            query,
+            re.IGNORECASE,
+        )
+        candidates.extend(decl_matches)
+        # Pattern 3: "where is X", "lookup X", "find X"
+        nav_matches = re.findall(
+            r"(?:where\s+is|where\s+are|lookup|find|locate)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            query,
+            re.IGNORECASE,
+        )
+        candidates.extend(nav_matches)
+        # Pattern 4: Call syntax foo()
+        call_matches = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\(\)", query)
+        candidates.extend(call_matches)
+        # Pattern 5: Single identifier query
+        trimmed = query.strip()
+        stop_words = {"where", "which", "what", "how", "why", "when", "show", "tell", "explain", "code", "repo", "test"}
+        if re.fullmatch(r"^[A-Za-z_][A-Za-z0-9_]{2,}$", trimmed) and trimmed.lower() not in stop_words:
+            candidates.append(trimmed)
+
+        seen = set()
+        unique = []
+        for c in candidates:
+            if c and c not in seen and len(c) > 1:
+                seen.add(c)
+                unique.append(c)
+        return unique
+
+    @staticmethod
+    def _extract_path_scope(query: str) -> Optional[str]:
+        """Extract explicit path or subsystem filter from query (e.g. `path:drivers/net/`, `in kernel/sched/`)."""
+        m = re.search(r"\b(?:path|dir|folder|subsystem|file):\s*([a-zA-Z0-9_\-\./]+)", query, re.IGNORECASE)
+        if m:
+            return m.group(1).strip().strip('"\'')
+        m2 = re.search(r"\bin\s+(?:the\s+)?([a-zA-Z0-9_\-]+/[a-zA-Z0-9_\-\./]+)", query, re.IGNORECASE)
+        if m2:
+            return m2.group(1).strip().strip('"\'')
+        return None
+
     def retrieve_node(self, state: AgentState) -> Dict[str, Any]:
-        """Execute Qdrant Hybrid Search (Dense + BM25 RRF) and recall Memori Labs memories."""
+        """Execute Deterministic Symbol Jump + Qdrant Hybrid Search (Dense + BM25 RRF) and recall Memori Labs memories."""
         query_to_search = state["effective_query"]
         collection = state.get("collection_name") or ""
         top_k = config.get("retriever", {}).get("top_k", 4)
+        path_scope = self._extract_path_scope(query_to_search)
+        if path_scope:
+            log.info(f"Agent Retriever: Scoping search to subsystem path '{path_scope}'")
 
         retrieved_docs: List[AdalDocument] = []
-        if collection:
+        symbol_docs: List[AdalDocument] = []
+        semantic_memories: List[str] = []
+
+        def _fetch_memories() -> List[str]:
             try:
-                # Generate dense vector with Google Gemini embedder
+                return self.memori_manager.recall_memories(query=query_to_search, limit=3)
+            except Exception as mem_err:
+                log.warning(f"Memori recall failed: {mem_err}")
+                return []
+
+        # Concurrent execution: launch Memori memory recall in background thread while embedding/searching Qdrant
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            memory_future = executor.submit(_fetch_memories)
+
+            if collection:
+                # Step 1: Deterministic Symbol Jump lookup (<2ms exact index jump)
+                if hasattr(self, "qdrant_manager") and hasattr(self.qdrant_manager, "lookup_symbol"):
+                    candidate_syms = self._extract_symbol_candidates(query_to_search)
+                    for sym in candidate_syms[:3]:
+                        try:
+                            matched = self.qdrant_manager.lookup_symbol(
+                                collection, sym, limit=2, path_prefix=path_scope
+                            )
+                            if matched:
+                                log.info(f"Agent Retriever: Fast symbol jump found {len(matched)} matches for '{sym}'")
+                                symbol_docs.extend(matched)
+                        except Exception as sym_err:
+                            log.debug(f"Symbol lookup failed for '{sym}': {sym_err}")
+
+                # Step 2: Dense + Sparse Hybrid Search
                 try:
-                    embed_output = self.embedder(query_to_search, model_kwargs={"task_type": "RETRIEVAL_QUERY"})
-                except Exception as emb_err:
-                    log.debug(f"Embedder call with task_type failed, retrying with input kwargs: {emb_err}")
-                    embed_output = self.embedder(model_kwargs={"input": [query_to_search]})
+                    # Generate dense vector with Google Gemini embedder
+                    try:
+                        embed_output = self.embedder(query_to_search, model_kwargs={"task_type": "RETRIEVAL_QUERY"})
+                    except Exception as emb_err:
+                        log.debug(f"Embedder call with task_type failed, retrying with input kwargs: {emb_err}")
+                        embed_output = self.embedder(model_kwargs={"input": [query_to_search]})
 
-                if embed_output and embed_output.data:
-                    dense_vector = embed_output.data[0].embedding
-                    # Qdrant Hybrid Search (Dense + BM25 RRF)
-                    retrieved_docs = self.qdrant_manager.hybrid_search(
-                        collection_name=collection,
-                        query_text=query_to_search,
-                        query_dense_vector=dense_vector,
-                        top_k=top_k,
-                    )
-            except Exception as e:
-                log.error(f"Hybrid retrieval failed: {e}")
+                    if embed_output and embed_output.data:
+                        dense_vector = embed_output.data[0].embedding
+                        # Qdrant Hybrid Search (Dense + BM25 RRF with optional subsystem scoping)
+                        retrieved_docs = self.qdrant_manager.hybrid_search(
+                            collection_name=collection,
+                            query_text=query_to_search,
+                            query_dense_vector=dense_vector,
+                            top_k=top_k,
+                            path_prefix=path_scope,
+                        )
+                except Exception as e:
+                    log.error(f"Hybrid retrieval failed: {e}")
 
-        # Recall persistent semantic memories from Memori Labs
-        semantic_memories = []
-        try:
-            semantic_memories = self.memori_manager.recall_memories(query=query_to_search, limit=3)
-        except Exception as e:
-            log.warning(f"Memori recall failed: {e}")
+            semantic_memories = memory_future.result()
+
+        # Combine symbol docs (high priority) with hybrid retrieved docs, deduplicating
+        seen_keys = set()
+        final_docs: List[AdalDocument] = []
+        for d in symbol_docs + retrieved_docs:
+            m = d.meta_data or {}
+            key = (m.get("file_path", ""), m.get("symbol_name", ""), d.text[:120])
+            if key not in seen_keys:
+                seen_keys.add(key)
+                final_docs.append(d)
 
         log.info(
-            f"Agent Retriever: Retrieved {len(retrieved_docs)} code chunks & {len(semantic_memories)} semantic memories "
-            f"(attempt {state['retry_count'] + 1})"
+            f"Agent Retriever: Retrieved {len(final_docs)} total code chunks ({len(symbol_docs)} symbol jumps) "
+            f"& {len(semantic_memories)} semantic memories (attempt {state['retry_count'] + 1})"
         )
         return {
-            "retrieved_documents": retrieved_docs,
+            "retrieved_documents": final_docs,
             "semantic_memories": semantic_memories,
         }
 
     def grade_documents_node(self, state: AgentState) -> Dict[str, Any]:
-        """Corrective RAG (CRAG) Grader: Evaluates retrieved chunk relevance to the query."""
+        """Corrective RAG (CRAG) Grader: Evaluates retrieved chunk relevance to the query with fast Cross-Encoder."""
         docs = state["retrieved_documents"]
         if not docs:
             log.info("Agent Grader: Zero documents retrieved -> marked not_relevant")
             return {"doc_grade": "not_relevant"}
 
         query = state["effective_query"]
+
+        # Step 1: Ultra-fast local Cross-Encoder evaluation & reranking (FlashRank)
+        reranker = RerankerService.get_instance()
+        if reranker.is_available:
+            try:
+                scored = reranker.rerank(query=query, documents=docs)
+                if scored:
+                    reranked_docs = [d for d, _ in scored]
+                    top_score = scored[0][1]
+
+                    # High confidence match: immediate relevant verdict without slow LLM roundtrip
+                    if top_score >= 0.25:
+                        log.info(f"Agent Grader: Fast Cross-Encoder confirmed relevance (top score {top_score:.4f})")
+                        return {"doc_grade": "relevant", "retrieved_documents": reranked_docs}
+
+                    # Extremely low confidence match: mark not_relevant to trigger query rewrite
+                    if top_score < 0.01:
+                        log.info(f"Agent Grader: Fast Cross-Encoder rejected chunks (top score {top_score:.4f})")
+                        return {"doc_grade": "not_relevant", "retrieved_documents": reranked_docs}
+
+                    # Ambiguous score: update doc ordering and allow LLM evaluation
+                    docs = reranked_docs
+            except Exception as rerank_err:
+                log.debug(f"Fast reranker evaluation failed: {rerank_err}")
+
+        # Step 2: Fallback to LLM semantic relevance assessment
         doc_samples = "\n---\n".join([d.text[:300] for d in docs[:3]])
 
         system_prompt = (
@@ -343,7 +474,7 @@ class LangGraphAgenticRAG:
 
         grade = "relevant" if is_relevant else "not_relevant"
         log.info(f"Agent Grader: Evaluated documents as '{grade}'")
-        return {"doc_grade": grade}
+        return {"doc_grade": grade, "retrieved_documents": docs}
 
     def rewrite_query_node(self, state: AgentState) -> Dict[str, Any]:
         """Self-Correction Query Rewriter: Reformulates technical query terms to optimize search recall."""
@@ -430,6 +561,9 @@ class LangGraphAgenticRAG:
         if repo_map:
             context_parts.append(f"### [Repository Architecture Overview (PageRank Centrality)]\n{repo_map}")
 
+        total_context_chars = 0
+        MAX_FULL_CONTEXT_CHARS = 8000
+
         for i, doc in enumerate(docs):
             meta = doc.meta_data or {}
             file_path = meta.get("file_path", f"file_{i}")
@@ -437,8 +571,21 @@ class LangGraphAgenticRAG:
             line_info = f":L{lines[0]}-L{lines[1]}" if lines and len(lines) >= 2 else ""
             symbol_name = meta.get("symbol_name")
             symbol_type = meta.get("symbol_type")
+            is_symbol_jump = meta.get("is_symbol_jump", False)
             symbol_info = f" [{symbol_type}: {symbol_name}]" if symbol_name else ""
-            context_parts.append(f"### [Code Snippet {i+1}] File: {file_path}{line_info}{symbol_info}\n{doc.text}")
+
+            doc_text = doc.text
+            # Dynamic Token Budget Allocation & AST Code Skeleton Folding:
+            # High-priority chunks (symbol jumps or top 2) remain full-fidelity.
+            # Secondary chunks beyond budget are folded to interface signatures.
+            if i >= 2 and not is_symbol_jump and total_context_chars > MAX_FULL_CONTEXT_CHARS:
+                ext = Path(file_path).suffix or ".py"
+                folded = ASTChunker.fold_code_skeleton(doc_text, ext=ext)
+                if folded:
+                    doc_text = f"// [AST Skeleton Signature]\n{folded}"
+
+            total_context_chars += len(doc_text)
+            context_parts.append(f"### [Code Snippet {i+1}] File: {file_path}{line_info}{symbol_info}\n{doc_text}")
 
         for m in memories:
             context_parts.append(f"### [Semantic Memory / Known Fact]\n{m}")

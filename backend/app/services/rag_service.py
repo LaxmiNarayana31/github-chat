@@ -310,10 +310,48 @@ class RAGService:
                 yield f"event: error\ndata: {json.dumps(err_payload)}\n\n"
                 return
 
+            active_collection = rag_instance.current_collection or "default"
+            cached = self.redis_cache.get_query_cache(repo_slug=active_collection, query=cleaned_query)
+            if cached:
+                cached_contexts = [
+                    {
+                        "file_path": c.get("meta_data", {}).get("file_path", "") if isinstance(c.get("meta_data"), dict) else "",
+                        "text": c.get("text", "")[:300],
+                    }
+                    for c in cached.get("contexts", [])
+                ]
+                yield f"event: status\ndata: {json.dumps({'stage': 'cache', 'message': 'Instant response from Redis cache [HIT]'})}\n\n"
+                yield f"event: token\ndata: {json.dumps({'token': cached.get('answer', '')})}\n\n"
+                yield f"event: done\ndata: {json.dumps({'answer': cached.get('answer', ''), 'rationale': cached.get('rationale', '') + ' [Cache: Redis HIT]', 'contexts': cached_contexts})}\n\n"
+                return
+
+            collected_answer = ""
+            collected_rationale = ""
+            collected_contexts = []
+
             for event in rag_instance.stream_call(cleaned_query):
                 event_type = event.get("type", "status")
                 payload = {k: v for k, v in event.items() if k != "type"}
+                if event_type == "token":
+                    collected_answer += event.get("token", "")
+                elif event_type == "done":
+                    collected_answer = event.get("answer", collected_answer)
+                    collected_rationale = event.get("rationale", "")
+                    collected_contexts = event.get("contexts", [])
                 yield f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+
+            # Cache completed streaming response for instant repeat queries
+            if collected_answer:
+                self.redis_cache.set_query_cache(
+                    repo_slug=active_collection,
+                    query=cleaned_query,
+                    payload={
+                        "answer": collected_answer,
+                        "rationale": collected_rationale,
+                        "contexts": collected_contexts,
+                    },
+                    ttl=3600,
+                )
 
         except Exception as e:
             log.error(f"RAGService [{sid}]: Error during stream_query execution: {e}")

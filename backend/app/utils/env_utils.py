@@ -7,24 +7,8 @@ log = logging.getLogger(__name__)
 
 
 def load_environment() -> None:
-    """Safely load environment variables from backend/.env and root/.env."""
-    try:
-        this_dir = os.path.dirname(os.path.abspath(__file__))
-        backend_dir = os.path.dirname(this_dir)
-        backend_env = os.path.join(backend_dir, ".env")
-        if os.path.exists(backend_env):
-            load_dotenv(backend_env, override=False)
-
-        root_dir = os.path.dirname(backend_dir)
-        root_env = os.path.join(root_dir, ".env")
-        if os.path.exists(root_env):
-            load_dotenv(root_env, override=False)
-
-        load_dotenv(verbose=False)
-    except (OSError, UnicodeDecodeError) as e:
-        log.warning(f"Error reading .env file: {e}")
-    except Exception as e:
-        log.warning(f"Unexpected error loading environment: {e}")
+    """Loads environment variables from .env file."""
+    load_dotenv()
 
 
 def check_api_keys() -> Dict[str, bool]:

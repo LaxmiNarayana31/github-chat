@@ -1,13 +1,11 @@
 import datetime
 import logging
-import os
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from adalflow.utils import printc
 from memori import Memori
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
 from backend.app.config.config import config

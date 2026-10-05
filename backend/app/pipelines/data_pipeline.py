@@ -1,15 +1,17 @@
+import gc
 import glob
 import logging
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import adalflow as adal
 from adalflow.components.data_process import TextSplitter, ToEmbeddings
 from adalflow.core.db import LocalDB
 from adalflow.core.types import Document
 from adalflow.utils import get_adalflow_default_root_path, printc
+import httpx
 
 from backend.app.config.config import config
 from backend.app.config.constants import (
@@ -29,6 +31,7 @@ from backend.app.utils.repo_utils import (
     extract_repo_metadata,
     get_authenticated_clone_url,
     get_repo_slug,
+    sanitize_collection_slug,
 )
 
 log = logging.getLogger(__name__)
@@ -49,13 +52,26 @@ def download_github_repo(repo_url: str, local_path: str, token: Optional[str] = 
                 printc(f"Could not clear {local_path}: {rm_err}", color="yellow")
 
         clone_url = get_authenticated_clone_url(repo_url, token=token)
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", clone_url, local_path],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        return result.stdout.decode("utf-8")
+        # Attempt blobless shallow clone (--filter=blob:none) to save gigabytes of bandwidth and disk on mega-repos
+        cmd_blobless = ["git", "clone", "--depth", "1", "--single-branch", "--no-tags", "--filter=blob:none", clone_url, local_path]
+        try:
+            result = subprocess.run(
+                cmd_blobless,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            return result.stdout.decode("utf-8")
+        except subprocess.CalledProcessError:
+            # Fallback to standard shallow clone if git server does not support blobless filters
+            cmd_standard = ["git", "clone", "--depth", "1", "--single-branch", "--no-tags", clone_url, local_path]
+            result = subprocess.run(
+                cmd_standard,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            return result.stdout.decode("utf-8")
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.decode("utf-8", errors="replace")
         if token:
@@ -68,6 +84,108 @@ def download_github_repo(repo_url: str, local_path: str, token: Optional[str] = 
             err_str = err_str.replace(token, "******")
         printc(f"Unexpected error during repo download: {err_str}", color="red")
         return f"Unexpected error: {err_str}"
+
+
+def stream_github_tree_documents(
+    repo_url: str,
+    token: Optional[str] = None,
+    branch: str = "HEAD",
+    max_files: int = 1000,
+) -> List[Document]:
+    """Stream and parse indexable repository files directly via GitHub Git Trees API without local disk cloning."""
+    meta = extract_repo_metadata(repo_url)
+    if meta.get("is_local"):
+        log.info(f"Local repo path detected, using local document reader: {repo_url}")
+        return read_all_documents(repo_url)
+
+    owner = meta.get("owner")
+    repo = meta.get("repo")
+    if not owner or not repo:
+        log.warning(f"Could not extract owner/repo from URL: {repo_url}")
+        return []
+
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "GitHubChat-Enterprise-Ingest/1.0",
+    }
+    auth_token = token or os.getenv("GITHUB_TOKEN") or config.get("github_token")
+    if auth_token:
+        headers["Authorization"] = f"token {auth_token}"
+
+    tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    documents: List[Document] = []
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.get(tree_url, headers=headers)
+            if resp.status_code != 200:
+                log.warning(f"GitHub Trees API error ({resp.status_code}): {resp.text[:200]}")
+                return []
+
+            tree_data = resp.json()
+            items = tree_data.get("tree", [])
+
+            indexable_items = []
+            for item in items:
+                if item.get("type") != "blob":
+                    continue
+                file_path = item.get("path", "")
+                parts = set(os.path.normpath(file_path).split(os.sep))
+                if parts & IGNORED_DIRS:
+                    continue
+                filename = os.path.basename(file_path).lower()
+                if filename in IGNORED_FILES:
+                    continue
+                if any(filename.endswith(suffix) for suffix in IGNORED_FILE_SUFFIXES):
+                    continue
+
+                _, ext = os.path.splitext(filename)
+                if ext.lower() not in ALL_INDEXABLE_EXTENSIONS:
+                    continue
+
+                size = item.get("size", 0)
+                if size == 0 or size > MAX_FILE_SIZE_BYTES:
+                    continue
+
+                indexable_items.append(item)
+                if len(indexable_items) >= max_files:
+                    break
+
+            log.info(f"GitHub Trees API: Discovered {len(indexable_items)} indexable files in {owner}/{repo}")
+
+            for item in indexable_items:
+                file_path = item.get("path", "")
+                raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{file_path}"
+                content_resp = client.get(raw_url, headers=headers)
+                if content_resp.status_code != 200:
+                    continue
+
+                content = content_resp.text
+                if len(content.strip()) < MIN_FILE_CHAR_LENGTH:
+                    continue
+
+                _, ext = os.path.splitext(file_path)
+                ext_clean = ext.lower()
+                is_code = ext_clean in CODE_EXTENSIONS
+
+                documents.append(
+                    Document(
+                        text=content,
+                        meta_data={
+                            "file_path": file_path,
+                            "type": ext_clean.lstrip("."),
+                            "is_code": is_code,
+                            "is_implementation": is_code,
+                            "title": file_path,
+                            "repo_url": repo_url,
+                        },
+                    )
+                )
+
+        return documents
+    except Exception as e:
+        log.warning(f"Error streaming GitHub tree for {repo_url}: {e}")
+        return []
 
 
 # Read all documents from local path with production-grade filtering
@@ -269,7 +387,9 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
         slug = os.path.basename(db_path).replace(".pkl", "")
         if redis_mgr and redis_mgr.is_connected and rendered_map:
             redis_mgr.setex(f"repomap:{slug}", 86400 * 7, rendered_map)
-            log.info(f"DataPipeline: Cached PageRank Repo Map for '{slug}' ({len(rendered_map)} chars).")
+            col_name = sanitize_collection_slug(slug)
+            redis_mgr.setex(f"repomap:{col_name}", 86400 * 7, rendered_map)
+            log.info(f"DataPipeline: Cached PageRank Repo Map for '{slug}' & '{col_name}' ({len(rendered_map)} chars).")
     except Exception as map_err:
         log.warning(f"DataPipeline: Error building RepoMap: {map_err}")
 
@@ -402,8 +522,187 @@ class DatabaseManager:
                     log.warning(f"Could not remove invalid cache file {save_db_file}: {rm_err}")
 
         printc("Indexing repository...", color="green")
+        docs = stream_and_index_repository_batches(
+            save_repo_dir=save_repo_dir,
+            save_db_file=save_db_file,
+            repo_slug=slug,
+            batch_file_count=150,
+        )
+        if docs:
+            return docs
+
+        # Fallback to read_all_documents if streaming produced 0 files
         docs = read_all_documents(save_repo_dir)
         if not docs:
             raise ValueError(f"No readable code or text files found in {save_repo_dir}")
         self.db = transform_documents_and_save_to_db(docs, save_db_file)
         return self.db.get_transformed_data(key="split_and_embed")
+
+
+def stream_and_index_repository_batches(
+    save_repo_dir: str,
+    save_db_file: str,
+    repo_slug: str,
+    batch_file_count: int = 150,
+) -> List[Document]:
+    """Stream valid code files in fixed batches, generating AST chunks and embeddings with constant O(1) RAM."""
+    redis_mgr = RedisCacheManager.get_instance()
+    checkpoint = redis_mgr.get_ingest_checkpoint(repo_slug) if redis_mgr else None
+    start_index = checkpoint.get("last_processed_index", 0) if checkpoint else 0
+
+    accumulated_embedded_docs: List[Document] = []
+    current_batch_docs: List[Document] = []
+    file_counter = 0
+
+    log.info(f"Streaming ingestion started for {save_repo_dir} (checkpoint resume index: {start_index})")
+
+    for doc in stream_documents(save_repo_dir):
+        file_counter += 1
+        if file_counter <= start_index:
+            continue
+
+        current_batch_docs.append(doc)
+
+        if len(current_batch_docs) >= batch_file_count:
+            try:
+                batch_db = transform_documents_and_save_to_db(current_batch_docs, save_db_file)
+                batch_embedded = batch_db.get_transformed_data(key="split_and_embed") or []
+                accumulated_embedded_docs.extend(batch_embedded)
+
+                if redis_mgr:
+                    redis_mgr.set_ingest_checkpoint(repo_slug, file_counter, total_files=-1)
+            except Exception as batch_err:
+                log.warning(f"Error processing streaming batch at file #{file_counter}: {batch_err}")
+
+            current_batch_docs.clear()
+            gc.collect()
+
+    if current_batch_docs:
+        try:
+            batch_db = transform_documents_and_save_to_db(current_batch_docs, save_db_file)
+            batch_embedded = batch_db.get_transformed_data(key="split_and_embed") or []
+            accumulated_embedded_docs.extend(batch_embedded)
+        except Exception as batch_err:
+            log.warning(f"Error processing final batch at file #{file_counter}: {batch_err}")
+        current_batch_docs.clear()
+        gc.collect()
+
+    if redis_mgr:
+        redis_mgr.clear_ingest_checkpoint(repo_slug)
+
+    return accumulated_embedded_docs
+
+
+def sync_git_delta(
+    repo_url: str,
+    local_path: str,
+    previous_commit: str,
+    new_commit: str = "HEAD",
+    qdrant_manager: Optional[Any] = None,
+    collection_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Incremental Change Data Capture (CDC): identifies changed, added, and deleted files between Git commits
+
+    and synchronizes Qdrant vector store by removing deleted/modified file points and returning
+    only newly added/modified documents for AST chunking and embedding.
+    """
+    try:
+        cmd = ["git", "diff", "--name-status", previous_commit, new_commit]
+        res = subprocess.run(
+            cmd,
+            cwd=local_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+        diff_lines = res.stdout.strip().splitlines()
+    except Exception as e:
+        log.warning(f"Git diff failed between {previous_commit} and {new_commit}: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "deleted_files": [],
+            "modified_files": [],
+            "added_files": [],
+            "updated_docs": [],
+        }
+
+    deleted_files: List[str] = []
+    modified_files: List[str] = []
+    added_files: List[str] = []
+
+    for line in diff_lines:
+        parts = line.strip().split("\t")
+        if not parts or len(parts) < 2:
+            continue
+        status_code = parts[0][0].upper()
+        if status_code == "D":
+            deleted_files.append(parts[1])
+        elif status_code == "A":
+            added_files.append(parts[1])
+        elif status_code == "M":
+            modified_files.append(parts[1])
+        elif status_code == "R":
+            deleted_files.append(parts[1])
+            if len(parts) > 2:
+                added_files.append(parts[2])
+
+    # Delete points for deleted and modified files from Qdrant
+    files_to_remove = set(deleted_files + modified_files)
+    if qdrant_manager and collection_name:
+        for fpath in files_to_remove:
+            normalized_rel = fpath.replace("\\", "/")
+            try:
+                qdrant_manager.delete_points_by_file_path(collection_name, normalized_rel)
+            except Exception as del_err:
+                log.warning(f"Error deleting points for {fpath}: {del_err}")
+
+    # Read and construct Document objects for added + modified files
+    updated_docs: List[Document] = []
+    files_to_read = set(added_files + modified_files)
+    for fpath in sorted(list(files_to_read)):
+        full_path = os.path.join(local_path, fpath)
+        normalized_rel = fpath.replace("\\", "/")
+        _, ext = os.path.splitext(fpath)
+        ext_clean = ext.lower()
+        if ext_clean not in ALL_INDEXABLE_EXTENSIONS:
+            continue
+        if not os.path.exists(full_path):
+            continue
+        try:
+            size = os.path.getsize(full_path)
+            if size == 0 or size > MAX_FILE_SIZE_BYTES:
+                continue
+            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            if len(content.strip()) < MIN_FILE_CHAR_LENGTH:
+                continue
+            is_code = ext_clean in CODE_EXTENSIONS
+            updated_docs.append(
+                Document(
+                    text=content,
+                    meta_data={
+                        "file_path": normalized_rel,
+                        "type": ext_clean.lstrip("."),
+                        "is_code": is_code,
+                        "is_implementation": is_code,
+                        "title": normalized_rel,
+                        "repo_url": repo_url,
+                    },
+                )
+            )
+        except Exception as read_err:
+            log.warning(f"Failed to read modified file {fpath}: {read_err}")
+
+    log.info(
+        f"Git Delta CDC: {len(deleted_files)} deleted, {len(modified_files)} modified, "
+        f"{len(added_files)} added -> {len(updated_docs)} docs to re-index"
+    )
+    return {
+        "status": "success",
+        "deleted_files": deleted_files,
+        "modified_files": modified_files,
+        "added_files": added_files,
+        "updated_docs": updated_docs,
+    }
