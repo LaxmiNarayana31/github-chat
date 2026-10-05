@@ -4,7 +4,7 @@ import pytest
 from adalflow.core.types import ModelType
 from fastapi.testclient import TestClient
 
-from backend.app.models.gemini_embedder import GeminiEmbedderClient
+from backend.app.llm_models.gemini_embedder import GeminiEmbedderClient
 from backend.app.services.redis_manager import RedisCacheManager
 from backend.main import app
 from backend.app.services.rag_service import RAGService

@@ -2,9 +2,9 @@
 
 import pytest
 
-# 1. Models package
-from backend.app.models.gemini_embedder import GeminiEmbedderClient
-from backend.app.models.groq_client import MultiProviderLLMClient
+# 1. LLM Models package
+from backend.app.llm_models.gemini_embedder import GeminiEmbedderClient
+from backend.app.llm_models.groq_client import MultiProviderLLMClient
 
 # 2. Embeddings package
 from backend.app.embeddings.qdrant_manager import QdrantManager, sanitize_collection_name

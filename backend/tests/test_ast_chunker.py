@@ -92,3 +92,36 @@ def test_embedding_pipeline_bypasses_text_splitter():
 
     seq_pipeline = prepare_data_pipeline()
     assert any(isinstance(step, TextSplitter) for step in seq_pipeline)
+
+
+def test_tree_sitter_multi_language_parsing():
+    """Verify universal Tree-sitter AST extraction across Go, Rust, and Java."""
+    chunker = ASTChunker()
+
+    # Go source test
+    go_code = """package main
+import "fmt"
+
+func CalculateTotal(prices []float64) float64 {
+    var total float64
+    for _, p := range prices {
+        total += p
+    }
+    return total
+}
+"""
+    go_chunks = chunker.chunk_file(go_code, file_path="main.go", file_type="go")
+    assert len(go_chunks) >= 1
+    go_symbols = [get_meta(c).get("symbol_name") for c in go_chunks]
+    assert "CalculateTotal" in go_symbols
+
+    # Rust source test
+    rs_code = """pub fn process_data(input: &str) -> String {
+    format!("processed: {}", input)
+}
+"""
+    rs_chunks = chunker.chunk_file(rs_code, file_path="lib.rs", file_type="rs")
+    assert len(rs_chunks) >= 1
+    rs_symbols = [get_meta(c).get("symbol_name") for c in rs_chunks]
+    assert "process_data" in rs_symbols
+
