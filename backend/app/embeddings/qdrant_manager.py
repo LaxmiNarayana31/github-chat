@@ -299,6 +299,13 @@ class QdrantManager:
                 quantization=models.QuantizationSearchParams(rescore=True, oversampling=2.0)
             )
 
+            clean_prefix = path_prefix.strip().replace("\\", "/").rstrip("/") if path_prefix else ""
+            query_filter = None
+            if clean_prefix:
+                query_filter = models.Filter(
+                    must=[models.FieldCondition(key="file_path", match=models.MatchText(text=clean_prefix))]
+                )
+
             fetch_limit = top_k * 4 if path_prefix else top_k * 2
             prefetch_list = []
             if query_dense_vector:
@@ -308,11 +315,17 @@ class QdrantManager:
                         using="dense_vector",
                         limit=fetch_limit,
                         params=search_params,
+                        filter=query_filter,
                     )
                 )
             if sparse_vec.indices:
                 prefetch_list.append(
-                    models.Prefetch(query=sparse_vec, using="bm25_sparse_vector", limit=fetch_limit)
+                    models.Prefetch(
+                        query=sparse_vec,
+                        using="bm25_sparse_vector",
+                        limit=fetch_limit,
+                        filter=query_filter,
+                    )
                 )
 
             if not prefetch_list:
@@ -325,6 +338,7 @@ class QdrantManager:
                     prefetch=prefetch_list,
                     query=models.RrfQuery(rrf=models.Rrf()),
                     limit=query_limit,
+                    query_filter=query_filter,
                     with_payload=True,
                 )
             else:
@@ -333,12 +347,12 @@ class QdrantManager:
                     query=query_dense_vector if query_dense_vector else sparse_vec,
                     using="dense_vector" if query_dense_vector else "bm25_sparse_vector",
                     limit=query_limit,
+                    query_filter=query_filter,
                     params=search_params if query_dense_vector else None,
                     with_payload=True,
                 )
 
             matched_points = results.points or []
-            clean_prefix = path_prefix.strip().replace("\\", "/").rstrip("/") if path_prefix else ""
             if clean_prefix:
                 matched_points = [
                     p
