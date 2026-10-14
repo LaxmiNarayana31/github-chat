@@ -1,7 +1,7 @@
 """Indexing job ORM model for GithubChat."""
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Column, DateTime, Index, Integer, String, Text
 from backend.config.database import Base
 
 
@@ -9,6 +9,9 @@ class IndexingJob(Base):
     """Tracks asynchronous background repository ingestion jobs."""
 
     __tablename__ = "indexing_jobs"
+    __table_args__ = (
+        Index("ix_indexing_jobs_status_created", "status", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     job_id = Column(String(128), unique=True, nullable=False, index=True)
