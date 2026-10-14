@@ -1,7 +1,7 @@
 """Conversation turn ORM model for GithubChat."""
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Column, DateTime, Index, Integer, String, Text
 from backend.config.database import Base
 
 
@@ -9,6 +9,9 @@ class ConversationTurn(Base):
     """Stores user queries and assistant responses per session."""
 
     __tablename__ = "conversation_turns"
+    __table_args__ = (
+        Index("ix_conversation_turns_session_created", "session_id", "created_at"),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String(128), nullable=False, index=True)
