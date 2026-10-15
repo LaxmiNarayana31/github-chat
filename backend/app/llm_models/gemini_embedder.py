@@ -33,7 +33,7 @@ class GeminiEmbedderClient(ModelClient):
         self.fallback_models = (
             list(fallback_models)
             if fallback_models is not None
-            else ["gemini-embedding-001", "text-embedding-004"]
+            else ["gemini-embedding-001", "gemini-embedding-2-preview"]
         )
         self.max_batch_size = max(1, min(int(max_batch_size), 100))
         self._sync_client = None
@@ -108,7 +108,7 @@ class GeminiEmbedderClient(ModelClient):
                 config_kwargs["output_dimensionality"] = self.dimensions
 
             config_obj = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
-            contents_to_send: Any = sanitized_batch[0] if len(sanitized_batch) == 1 else sanitized_batch
+            contents_to_send: Any = sanitized_batch
 
             for attempt in range(max_retries):
                 try:
