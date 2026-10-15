@@ -27,11 +27,13 @@ from backend.app.utils.env_utils import check_api_keys
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(levelname)s:     %(message)s",
 )
+for _noisy_logger in ["adalflow", "httpx", "httpcore", "sqlalchemy.engine", "google", "qdrant_client"]:
+    logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 log = logging.getLogger("backend.main")
 
-load_dotenv(verbose=True)
+load_dotenv(verbose=False)
 
 
 @asynccontextmanager
