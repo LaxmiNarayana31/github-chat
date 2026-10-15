@@ -11,17 +11,28 @@ Production-grade Codebase Intelligence and Agentic Retrieval-Augmented Generatio
   - **Corrective RAG (CRAG) Document Grader**: Evaluates retrieved code snippets for semantic relevance before generating answers.
   - **Query Reformulation Loop**: Iteratively expands and rewrites queries when retrieved context is insufficient.
   - **Self-RAG Grounding Evaluator**: Validates generated answers against retrieved source snippets to prevent hallucinations.
+- **Git Commit SHA Verification & Incremental Ingestion**:
+  - Validates remote repository commit hashes via `git ls-remote` prior to ingestion.
+  - If the commit hash matches the existing database record, cloning and vector indexing are skipped entirely, instantly serving queries.
+  - When new commits are detected, the repository is automatically updated and incrementally re-vectorized.
 - **Qdrant Cloud Cluster Hybrid Search (RRF)**:
   - Connects to your managed **Qdrant Cloud cluster** via `QDRANT_URL` and `QDRANT_API_KEY`.
   - Combines 768-dimensional dense vectors from Google Gemini (`gemini-embedding-2` / `gemini-embedding-001`) with FastEmbed BM25 sparse lexical vectors.
   - Fuses dense and sparse rankings using Reciprocal Rank Fusion (RRF) for high recall across exact symbol names and semantic concepts.
+- **Upstash Redis & Redis Caching Layer**:
+  - Supports Upstash Redis REST API or standard Redis for distributed locking, raw Git blob chunk deduplication, and embedding caching.
+  - Streaming checkpoint tracking allows large repository ingestions to resume seamlessly without re-embedding uncached files.
+  - Automatic graceful fallback to in-memory caching when Redis credentials are not configured.
+- **AST-Aware Chunking & PageRank Repository Map**:
+  - Recursively parses source files with syntax awareness and constructs a repository-wide call/import dependency graph.
+  - Computes structural importance via NetworkX PageRank to guide context assembly.
 - **Memori Labs Relational SQL Memory**:
   - Persists conversational entities, processes, sessions, conversations, and dialog turns in a managed PostgreSQL database (such as Aiven) via SQLAlchemy (with transient in-memory storage for test runs).
   - High-level semantic memory recall enriches prompt context with known facts across sessions.
 - **Real-Time Token & Thought Streaming**:
   - Server-Sent Events deliver real-time progress steps, reasoning summaries, live token streams, and source citations.
 - **Dual User Interfaces**:
-  - **React 18 SPA**: Modern TypeScript + Tailwind CSS application with real-time progress indicators, collapsible reasoning cards, and syntax-highlighted citations.
+  - **React 18 SPA**: Modern TypeScript + Tailwind CSS application (running on port 3000) with real-time progress indicators, collapsible reasoning cards, and syntax-highlighted citations.
   - **Streamlit Dashboard**: Standalone Python web dashboard with model connection indicators, history controls, and transcript exports.
 
 ---
@@ -31,7 +42,7 @@ Production-grade Codebase Intelligence and Agentic Retrieval-Augmented Generatio
 ```mermaid
 graph TB
     subgraph Client_Layer["Client Layer (User Interfaces)"]
-        ReactUI["React 18 SPA (Vite + Tailwind CSS + TypeScript)<br/>Port 5173"]
+        ReactUI["React 18 SPA (Vite + Tailwind CSS + TypeScript)<br/>Port 3000"]
         StreamlitUI["Streamlit Dashboard (Python)<br/>Port 8501"]
     end
 
@@ -49,6 +60,7 @@ graph TB
     subgraph Storage_Layer["Data & Persistence Layer"]
         QdrantStore["Qdrant Cloud Cluster<br/>Managed Vector Database via QDRANT_URL"]
         MemoriSQL["PostgreSQL Database (Aiven / Cloud)<br/>Managed Relational Storage via DB_*"]
+        RedisStore["Upstash Redis / Redis<br/>Distributed Locks & Embedding Cache"]
         LocalFileCache["Local Disk Cache<br/>~/.adalflow/databases/*.pkl & repos/"]
     end
 
@@ -68,6 +80,7 @@ graph TB
     RAGOrchestrator --> DataPipeline
 
     DataPipeline -->|"Clone & Parse"| LocalFileCache
+    DataPipeline -->|"Cache Embeddings & Blobs"| RedisStore
     DataPipeline -->|"Compute Dense Vectors"| GeminiAPI
     DataPipeline -->|"Compute Sparse Vectors"| FastEmbedModel
     DataPipeline -->|"Upsert Vectors & Payloads"| QdrantStore
@@ -109,60 +122,6 @@ flowchart TD
     SaveMemoryNode --> EndNode([End: Yield Answer, Rationale, Citations])
 ```
 
----
-
-## Repository Structure
-
-```
-github-chat/
-├── backend/                        # FastAPI server, AI core & Python environment
-│   ├── main.py                     # FastAPI application entrypoint & middleware
-│   ├── core/                       # Core AI and RAG engine
-│   │   ├── rag.py                  # Orchestrator integrating LangGraph & memory
-│   │   ├── agentic_rag.py          # LangGraph StateGraph (Router, CRAG, Self-RAG)
-│   │   ├── qdrant_manager.py       # Qdrant Hybrid Search with RRF fusion
-│   │   ├── memory_manager.py       # Memori Labs SQL memory schema and operations
-│   │   ├── data_pipeline.py        # Repository ingestion, filtering, and chunking
-│   │   ├── gemini_embedder.py      # Google Gemini Embedder with auto-batching
-│   │   ├── groq_client.py          # Groq Cloud LLM client
-│   │   ├── config.py               # Model configurations and runtime defaults
-│   │   ├── constants.py            # Centralized file extensions, limits, and exclusions
-│   │   └── system_prompt.py        # System prompts and prompt templates
-│   ├── routes/                     # API route controllers
-│   ├── services/                   # Business logic and service singletons
-│   ├── dto/                        # Typed Pydantic request/response schemas
-│   ├── utils/                      # Key validation, URL parsing, and error handlers
-│   ├── tests/                      # Pytest automated test suite
-│   ├── pyproject.toml              # Backend environment and dependency specification
-│   ├── requirements.txt            # Pinned requirements
-│   ├── uv.lock                     # Reproducible UV lockfile
-│   └── .env.example                # Environment variables template
-│
-├── frontend/                       # React 18 production web application
-│   ├── src/
-│   │   ├── App.tsx                 # Root application component
-│   │   ├── components/             # LandingPage, ChatPage, Sidebar, ChatMessage
-│   │   ├── services/api.ts         # Centralized API client (Fetch & SSE parser)
-│   │   ├── main.tsx                # React DOM entrypoint
-│   │   └── index.css               # Tailwind CSS stylesheet
-│   ├── package.json                # Frontend package configuration
-│   ├── vite.config.ts              # Vite configuration
-│   └── tsconfig.json               # TypeScript configuration
-│
-├── streamlit_app/                  # Interactive Streamlit UI
-│   ├── main.py                     # Streamlit application dashboard
-│   ├── styles.py                   # Dark glassmorphism styling
-│   ├── components/                 # Sidebar and message view components
-│   └── requirements.txt            # Dependencies for Streamlit
-│
-├── ARCHITECTURE.md                 # Production architecture documentation
-├── pyrightconfig.json              # Pyright language server configuration
-├── .gitignore                      # Git exclusion rules
-└── README.md                       # Project documentation
-```
-
----
-
 ## Prerequisites
 
 - **Python**: 3.12 or higher
@@ -174,6 +133,8 @@ github-chat/
   - `QDRANT_URL`: Managed Qdrant Cloud cluster endpoint
   - `QDRANT_API_KEY`: Managed Qdrant Cloud API key
   - Managed PostgreSQL: `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `SSL_MODE` (or `DATABASE_URL`)
+  - `REDIS_URL` or `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`: (Optional) Upstash Redis / standard Redis for distributed locks, deduplication, and embedding caching
+  - `GITHUB_TOKEN`: (Optional) GitHub Personal Access Token for private repositories or elevated clone limits
 
 ---
 
@@ -220,6 +181,14 @@ DB_HOST=your_db_host.aivencloud.com
 DB_PORT=5432
 DB_NAME=defaultdb
 SSL_MODE=require
+
+# Optional: Upstash Redis REST or standard Redis (falls back to local memory if omitted)
+# UPSTASH_REDIS_REST_URL=https://your-database.upstash.io
+# UPSTASH_REDIS_REST_TOKEN=your_upstash_rest_token
+# REDIS_URL=redis://localhost:6379/0
+
+# Optional: GitHub Personal Access Token for private repositories
+# GITHUB_TOKEN=your_github_token_here
 ```
 
 | Key | Where to Get | Purpose |
@@ -228,6 +197,8 @@ SSL_MODE=require
 | `GROQ_API_KEY` | [Groq Cloud Console](https://console.groq.com/keys) | Agent routing, CRAG grading, & generation |
 | `QDRANT_URL` & `QDRANT_API_KEY` | [Qdrant Cloud Console](https://cloud.qdrant.io) | Managed hybrid vector retrieval cluster |
 | `DB_*` / `DATABASE_URL` | [Aiven Console](https://console.aiven.io) | Managed PostgreSQL relational memory storage |
+| `REDIS_URL` / `UPSTASH_*` | [Upstash Console](https://console.upstash.com) | (Optional) Distributed locks & embedding cache |
+| `GITHUB_TOKEN` | [GitHub Settings](https://github.com/settings/tokens) | (Optional) Access to private repos & higher rate limits |
 
 ---
 
@@ -287,7 +258,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` in your browser. Enter any public GitHub repository URL (such as `https://github.com/fastapi/fastapi`), click **Index**, and begin chatting with full citations and streaming thoughts.
+Open `http://localhost:3000` in your browser. Enter any public GitHub repository URL (such as `https://github.com/fastapi/fastapi`), click **Index**, and begin chatting with full citations and streaming thoughts.
 
 #### Option B: Streamlit Web Dashboard
 
@@ -317,4 +288,4 @@ backend/.venv/Scripts/pytest backend/tests
 uv run --project backend pytest backend/tests
 ```
 
-All 34 tests validate the document ingestion pipeline, Gemini embedder batching, Qdrant hybrid retrieval, Memori SQL turn saving, API routes, and LangGraph agent execution.
+All 61 tests validate the document ingestion pipeline, Gemini embedder batching, Qdrant hybrid retrieval, Memori SQL turn saving, API routes, and LangGraph agent execution.
