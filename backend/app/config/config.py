@@ -42,7 +42,7 @@ def create_embedder_client() -> GeminiEmbedderClient:
             api_key=os.getenv("GEMINI_API_KEY"),
             dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
             model_name=DEFAULT_EMBEDDING_MODEL,
-            fallback_models=[DEFAULT_FALLBACK_EMBEDDING_MODEL, "text-embedding-004"],
+            fallback_models=[DEFAULT_FALLBACK_EMBEDDING_MODEL, "gemini-embedding-2-preview"],
             max_batch_size=DEFAULT_BATCH_SIZE,
         )
     except Exception as e:
