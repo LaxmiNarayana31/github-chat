@@ -32,3 +32,19 @@ async def health_check() -> HealthResponse:
     except Exception as e:
         log.error(f"Error checking system health: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) from e
+
+
+@router.get("/health/live", summary="Kubernetes Liveness Probe")
+async def liveness_probe() -> Dict[str, str]:
+    """Lightweight probe verifying the ASGI server process is alive and responsive."""
+    return {"status": "alive"}
+
+
+@router.get("/health/ready", response_model=HealthResponse, summary="Kubernetes Readiness Probe")
+async def readiness_probe() -> HealthResponse:
+    """Readiness probe verifying database, cache, and vector store readiness for traffic."""
+    health = system_service.get_health_status()
+    if health.status == "degraded":
+        # Process is still accepting requests but operating in degraded capacity
+        log.warning("Readiness probe: Service operating in degraded capacity.")
+    return health
