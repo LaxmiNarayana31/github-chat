@@ -4,8 +4,8 @@ import atexit
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
 import uuid
+from typing import Any, Dict, List, Optional
 
 from adalflow.core.types import Document as AdalDocument
 from fastembed import SparseTextEmbedding
