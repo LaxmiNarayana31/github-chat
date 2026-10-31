@@ -166,16 +166,16 @@ class MultiProviderLLMClient(ModelClient):
                     system_instruction += "\n\n" + content
             elif role in ("assistant", "model"):
                 contents.append(
-                    types.Content(role="model", parts=[types.Part.from_text(text=content)])
+                    types.Content.model_validate({"role": "model", "parts": [{"text": content}]})
                 )
             else:
                 contents.append(
-                    types.Content(role="user", parts=[types.Part.from_text(text=content)])
+                    types.Content.model_validate({"role": "user", "parts": [{"text": content}]})
                 )
 
         if not contents:
             contents.append(
-                types.Content(role="user", parts=[types.Part.from_text(text="Please respond.")])
+                types.Content.model_validate({"role": "user", "parts": [{"text": "Please respond."}]})
             )
 
         # Handle Gemma models: merge system instructions directly into first user message
@@ -183,17 +183,17 @@ class MultiProviderLLMClient(ModelClient):
         if is_gemma and system_instruction:
             if contents and contents[0].role == "user" and contents[0].parts:
                 orig_text = contents[0].parts[0].text or ""
-                contents[0] = types.Content(
-                    role="user",
-                    parts=[types.Part.from_text(text=f"{system_instruction}\n\n{orig_text}")],
-                )
+                contents[0] = types.Content.model_validate({
+                    "role": "user",
+                    "parts": [{"text": f"{system_instruction}\n\n{orig_text}"}],
+                })
             else:
                 contents.insert(
                     0,
-                    types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=system_instruction)],
-                    ),
+                    types.Content.model_validate({
+                        "role": "user",
+                        "parts": [{"text": system_instruction}],
+                    }),
                 )
             system_instruction = None
 
