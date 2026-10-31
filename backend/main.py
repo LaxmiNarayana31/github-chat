@@ -1,23 +1,16 @@
-import os
-from pathlib import Path
-import sys
-
-# Ensure both project root and backend dir are in sys.path when running from any CWD
-_backend_dir = Path(__file__).resolve().parent
-_root_dir = _backend_dir.parent
-for _p in [str(_root_dir), str(_backend_dir)]:
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
-from contextlib import asynccontextmanager
 import logging
+import sys
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
 
+import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-import uvicorn
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from backend.app.api.health_routes import router as health_router
 from backend.app.api.rag_routes import router as rag_router
@@ -29,10 +22,19 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s:     %(message)s",
 )
+
+        
 for _noisy_logger in ["adalflow", "httpx", "httpcore", "sqlalchemy.engine", "google", "qdrant_client"]:
     logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 log = logging.getLogger("backend.main")
 
+# Ensure both project root and backend dir are in sys.path when running from any CWD
+_backend_dir = Path(__file__).resolve().parent
+_root_dir = _backend_dir.parent
+for _p in [str(_root_dir), str(_backend_dir)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+        
 load_dotenv(verbose=False)
 
 
@@ -78,6 +80,19 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+class CorrelationIdMiddleware(BaseHTTPMiddleware):
+    """Enterprise Correlation ID middleware attaching unique X-Request-ID for distributed tracing."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:12]}"
+        request.state.request_id = request_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
+# Request tracing correlation ID middleware
+app.add_middleware(CorrelationIdMiddleware)
 
 # CORS middleware
 app.add_middleware(
