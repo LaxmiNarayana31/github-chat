@@ -24,7 +24,7 @@ from backend.app.utils.env_utils import build_postgres_url
 
 log = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv(verbose=True)
 
 # Default configuration constants
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-2"

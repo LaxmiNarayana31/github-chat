@@ -3,6 +3,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from backend.app.dto.document_dto import Document
+from backend.app.utils.repo_utils import validate_safe_git_url
 
 
 class AsyncInitResponse(BaseModel):
@@ -26,10 +27,10 @@ class JobStatusResponse(BaseModel):
 
 class InitRequest(BaseModel):
     """Request payload to initialize and index a repository."""
-    repo_url: str = Field(..., min_length=1, description="GitHub repository URL or local directory path")
+    repo_url: str = Field(..., min_length=1, max_length=512, description="GitHub repository URL or local directory path")
     force_reindex: bool = Field(default=False, description="Whether to discard cached embeddings and re-index fresh")
-    github_token: Optional[str] = Field(default=None, description="Optional GitHub Personal Access Token for private repos")
-    session_id: Optional[str] = Field(default=None, description="Optional session identifier for multi-tenant isolation")
+    github_token: Optional[str] = Field(default=None, max_length=256, description="Optional GitHub Personal Access Token for private repos")
+    session_id: Optional[str] = Field(default=None, max_length=128, description="Optional session identifier for multi-tenant isolation")
 
     @field_validator("repo_url")
     @classmethod
@@ -37,6 +38,9 @@ class InitRequest(BaseModel):
         cleaned = v.strip()
         if not cleaned:
             raise ValueError("repo_url must not be empty or whitespace.")
+        is_safe, reason = validate_safe_git_url(cleaned)
+        if not is_safe:
+            raise ValueError(f"Invalid or unsafe repo_url: {reason}")
         return cleaned
 
 
@@ -50,9 +54,9 @@ class InitResponse(BaseModel):
 
 class QueryRequest(BaseModel):
     """Request payload to query an initialized repository with RAG."""
-    repo_url: str = Field(default="", description="Target repository URL or path")
-    query: str = Field(..., min_length=1, description="User query or question about the repository")
-    session_id: Optional[str] = Field(default=None, description="Session identifier for multi-user isolation")
+    repo_url: str = Field(default="", max_length=512, description="Target repository URL or path")
+    query: str = Field(..., min_length=1, max_length=4096, description="User query or question about the repository")
+    session_id: Optional[str] = Field(default=None, max_length=128, description="Session identifier for multi-user isolation")
 
     @field_validator("query")
     @classmethod
@@ -60,6 +64,18 @@ class QueryRequest(BaseModel):
         cleaned = v.strip()
         if not cleaned:
             raise ValueError("query must not be empty or whitespace.")
+        if len(cleaned) > 4096:
+            raise ValueError("query exceeds maximum permitted length of 4096 characters.")
+        return cleaned
+
+    @field_validator("repo_url")
+    @classmethod
+    def validate_repo_url_if_present(cls, v: str) -> str:
+        cleaned = v.strip()
+        if cleaned:
+            is_safe, reason = validate_safe_git_url(cleaned)
+            if not is_safe:
+                raise ValueError(f"Invalid or unsafe repo_url: {reason}")
         return cleaned
 
 
