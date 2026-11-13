@@ -5,6 +5,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
+from backend.app.api.health_routes import router as health_router
+from backend.app.api.rag_routes import router as rag_router
+from backend.app.services.rag_service import RAGService
+from backend.app.services.redis_manager import RedisCacheManager
+from backend.app.utils.env_utils import check_api_keys
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,19 +17,20 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from backend.app.api.health_routes import router as health_router
-from backend.app.api.rag_routes import router as rag_router
-from backend.app.services.rag_service import RAGService
-from backend.app.services.redis_manager import RedisCacheManager
-from backend.app.utils.env_utils import check_api_keys
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(levelname)s:     %(message)s",
 )
 
-        
-for _noisy_logger in ["adalflow", "httpx", "httpcore", "sqlalchemy.engine", "google", "qdrant_client"]:
+
+for _noisy_logger in [
+    "adalflow",
+    "httpx",
+    "httpcore",
+    "sqlalchemy.engine",
+    "google",
+    "qdrant_client",
+]:
     logging.getLogger(_noisy_logger).setLevel(logging.WARNING)
 log = logging.getLogger("backend.main")
 
@@ -34,7 +40,7 @@ _root_dir = _backend_dir.parent
 for _p in [str(_root_dir), str(_backend_dir)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
-        
+
 load_dotenv(verbose=False)
 
 
@@ -45,9 +51,13 @@ async def lifespan(app: FastAPI):
     try:
         keys = check_api_keys()
         if not keys.get("gemini"):
-            log.warning("GEMINI_API_KEY is not configured. Set it in .env or environment variables.")
+            log.warning(
+                "GEMINI_API_KEY is not configured. Set it in .env or environment variables."
+            )
         if not keys.get("groq"):
-            log.warning("GROQ_API_KEY is not configured. Set it in .env or environment variables.")
+            log.warning(
+                "GROQ_API_KEY is not configured. Set it in .env or environment variables."
+            )
     except Exception as key_err:
         log.warning(f"Could not check API keys on startup: {key_err}")
 
@@ -63,7 +73,9 @@ async def lifespan(app: FastAPI):
     try:
         rag_service = RAGService.get_instance()
         rag_service.get_rag()
-        log.info("Memori Labs memory layer and LangGraph Agentic RAG pre-warmed successfully.")
+        log.info(
+            "Memori Labs memory layer and LangGraph Agentic RAG pre-warmed successfully."
+        )
     except (RuntimeError, ValueError) as prewarm_err:
         log.info(f"RAG engine pre-warm deferred to first request: {prewarm_err}")
     except Exception as e:
@@ -81,15 +93,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
 class CorrelationIdMiddleware(BaseHTTPMiddleware):
     """Enterprise Correlation ID middleware attaching unique X-Request-ID for distributed tracing."""
 
     async def dispatch(self, request: Request, call_next):
-        request_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:12]}"
+        request_id = (
+            request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:12]}"
+        )
         request.state.request_id = request_id
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         return response
+
 
 # Request tracing correlation ID middleware
 app.add_middleware(CorrelationIdMiddleware)
@@ -141,5 +157,6 @@ app.include_router(rag_router)
 
 
 if __name__ == "__main__":
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
-
+    uvicorn.run(
+        "backend.main:app", host="0.0.0.0", port=8000, reload=True, log_level="info"
+    )
