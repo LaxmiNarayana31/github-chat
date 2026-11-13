@@ -26,6 +26,7 @@ dependencies = [
     "tree-sitter>=0.21.3",
     "tree-sitter-languages>=1.10.2",
     "redis>=5.0.0",
+    "ruff>=0.17.4",
 ]
 
 [tool.pytest.ini_options]
