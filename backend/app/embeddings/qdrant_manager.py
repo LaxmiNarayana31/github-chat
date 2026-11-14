@@ -5,14 +5,13 @@ import logging
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from adalflow.core.types import Document as AdalDocument
+from backend.app.config.config import config
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.models import PointStruct
-
-from backend.app.config.config import config
 
 log = logging.getLogger(__name__)
 
@@ -38,23 +37,35 @@ class QdrantManager:
 
     def __init__(
         self,
-        url: Optional[str] = None,
-        api_key: Optional[str] = None,
-        storage_path: Optional[str] = None,
-        cloud_inference: Optional[bool] = None,
+        url: str | None = None,
+        api_key: str | None = None,
+        storage_path: str | None = None,
+        cloud_inference: bool | None = None,
     ):
         """Initializes Qdrant client connection and FastEmbed sparse model."""
         try:
-            qdrant_cfg: Dict[str, Any] = (
-                config.get("qdrant", {}) if isinstance(config.get("qdrant"), dict) else {}
+            qdrant_cfg: dict[str, Any] = (
+                config.get("qdrant", {})
+                if isinstance(config.get("qdrant"), dict)
+                else {}
             )
-            raw_url = url or qdrant_cfg.get("url") or os.getenv("QDRANT_URL", "").strip() or None
+            raw_url = (
+                url
+                or qdrant_cfg.get("url")
+                or os.getenv("QDRANT_URL", "").strip()
+                or None
+            )
             raw_api_key = (
-                api_key or qdrant_cfg.get("api_key") or os.getenv("QDRANT_API_KEY", "").strip() or None
+                api_key
+                or qdrant_cfg.get("api_key")
+                or os.getenv("QDRANT_API_KEY", "").strip()
+                or None
             )
             raw_storage = storage_path or qdrant_cfg.get("storage_path") or None
             use_cloud = bool(
-                cloud_inference if cloud_inference is not None else qdrant_cfg.get("cloud_inference", True)
+                cloud_inference
+                if cloud_inference is not None
+                else qdrant_cfg.get("cloud_inference", True)
             )
 
             # Initialize client based on provided configuration with fallback to memory
@@ -73,10 +84,12 @@ class QdrantManager:
                 self.client = QdrantClient(location=":memory:")
 
             self.bm25_model_name: str = str(qdrant_cfg.get("bm25_model", "Qdrant/bm25"))
-            self._bm25_model: Optional[SparseTextEmbedding] = None
+            self._bm25_model: SparseTextEmbedding | None = None
             atexit.register(self.close)
         except Exception as e:
-            log.warning(f"Error initializing Qdrant client: {e}. Falling back to in-memory instance.")
+            log.warning(
+                f"Error initializing Qdrant client: {e}. Falling back to in-memory instance."
+            )
             self.client = QdrantClient(location=":memory:")
             self.bm25_model_name = "Qdrant/bm25"
             self._bm25_model = None
@@ -101,7 +114,7 @@ class QdrantManager:
             log.error(f"Failed to load BM25 model: {e}")
             raise
 
-    def embed_sparse_texts(self, texts: List[str]) -> List[models.SparseVector]:
+    def embed_sparse_texts(self, texts: list[str]) -> list[models.SparseVector]:
         """Generates BM25 sparse vectors for text chunks."""
         try:
             if not texts:
@@ -109,12 +122,16 @@ class QdrantManager:
             sanitized = [str(t) if t is not None else "" for t in texts]
             embeddings = list(self.bm25_embedder.embed(sanitized))
             return [
-                models.SparseVector(indices=emb.indices.tolist(), values=emb.values.tolist())
+                models.SparseVector(
+                    indices=emb.indices.tolist(), values=emb.values.tolist()
+                )
                 for emb in embeddings
             ]
         except Exception as e:
             log.warning(f"Sparse embedding error: {e}. Returning empty vectors.")
-            return [models.SparseVector(indices=[], values=[]) for _ in range(len(texts))]
+            return [
+                models.SparseVector(indices=[], values=[]) for _ in range(len(texts))
+            ]
 
     def collection_exists(self, collection_name: str) -> bool:
         """Checks whether a collection exists in Qdrant."""
@@ -215,7 +232,7 @@ class QdrantManager:
     def index_documents(
         self,
         collection_name: str,
-        documents: List[AdalDocument],
+        documents: list[AdalDocument],
         dense_dimension: int = 768,
         batch_size: int = 40,
         force_reindex: bool = False,
@@ -223,7 +240,9 @@ class QdrantManager:
         """Indexes code chunks into collection with dual dense and BM25 sparse vectors."""
         try:
             clean_name = self.get_or_create_collection(
-                collection_name, dense_dimension=dense_dimension, force_recreate=force_reindex
+                collection_name,
+                dense_dimension=dense_dimension,
+                force_recreate=force_reindex,
             )
 
             existing_count = self.get_collection_point_count(clean_name)
@@ -235,7 +254,7 @@ class QdrantManager:
                 batch = documents[i : i + batch_size]
                 sparse_vectors = self.embed_sparse_texts([doc.text for doc in batch])
 
-                points: List[PointStruct] = []
+                points: list[PointStruct] = []
                 for doc_idx, (doc, sparse_vec) in enumerate(zip(batch, sparse_vectors)):
                     dense_vec = getattr(doc, "vector", None)
                     if not dense_vec or len(dense_vec) != dense_dimension:
@@ -264,7 +283,10 @@ class QdrantManager:
                     points.append(
                         PointStruct(
                             id=unique_id,
-                            vector={"dense_vector": dense_vec, "bm25_sparse_vector": sparse_vec},
+                            vector={
+                                "dense_vector": dense_vec,
+                                "bm25_sparse_vector": sparse_vec,
+                            },
                             payload=payload,
                         )
                     )
@@ -282,10 +304,10 @@ class QdrantManager:
         self,
         collection_name: str,
         query_text: str,
-        query_dense_vector: List[float],
+        query_dense_vector: list[float],
         top_k: int = 5,
-        path_prefix: Optional[str] = None,
-    ) -> List[AdalDocument]:
+        path_prefix: str | None = None,
+    ) -> list[AdalDocument]:
         """Executes hybrid search fusing dense vector and BM25 sparse with RRF."""
         try:
             clean_name = sanitize_collection_name(collection_name)
@@ -293,17 +315,31 @@ class QdrantManager:
                 return []
 
             sparse_results = self.embed_sparse_texts([query_text])
-            sparse_vec = sparse_results[0] if sparse_results else models.SparseVector(indices=[], values=[])
-
-            search_params = models.SearchParams(
-                quantization=models.QuantizationSearchParams(rescore=True, oversampling=2.0)
+            sparse_vec = (
+                sparse_results[0]
+                if sparse_results
+                else models.SparseVector(indices=[], values=[])
             )
 
-            clean_prefix = path_prefix.strip().replace("\\", "/").rstrip("/") if path_prefix else ""
+            search_params = models.SearchParams(
+                quantization=models.QuantizationSearchParams(
+                    rescore=True, oversampling=2.0
+                )
+            )
+
+            clean_prefix = (
+                path_prefix.strip().replace("\\", "/").rstrip("/")
+                if path_prefix
+                else ""
+            )
             query_filter = None
             if clean_prefix:
                 query_filter = models.Filter(
-                    must=[models.FieldCondition(key="file_path", match=models.MatchText(text=clean_prefix))]
+                    must=[
+                        models.FieldCondition(
+                            key="file_path", match=models.MatchText(text=clean_prefix)
+                        )
+                    ]
                 )
 
             fetch_limit = top_k * 4 if path_prefix else top_k * 2
@@ -345,7 +381,9 @@ class QdrantManager:
                 results = self.client.query_points(
                     collection_name=clean_name,
                     query=query_dense_vector if query_dense_vector else sparse_vec,
-                    using="dense_vector" if query_dense_vector else "bm25_sparse_vector",
+                    using="dense_vector"
+                    if query_dense_vector
+                    else "bm25_sparse_vector",
                     limit=query_limit,
                     query_filter=query_filter,
                     params=search_params if query_dense_vector else None,
@@ -360,7 +398,7 @@ class QdrantManager:
                     if clean_prefix in (p.payload or {}).get("file_path", "")
                 ]
 
-            documents: List[AdalDocument] = []
+            documents: list[AdalDocument] = []
             for p in matched_points[:top_k]:
                 payload = p.payload or {}
                 meta = {
@@ -376,14 +414,16 @@ class QdrantManager:
                     "rrf_score": getattr(p, "score", None),
                     "point_id": p.id,
                 }
-                documents.append(AdalDocument(text=payload.get("text", ""), meta_data=meta))
+                documents.append(
+                    AdalDocument(text=payload.get("text", ""), meta_data=meta)
+                )
 
             return documents
         except Exception as e:
             log.error(f"Error during hybrid search in {collection_name}: {e}")
             return []
 
-    def get_indexed_files(self, collection_name: str, limit: int = 100) -> List[str]:
+    def get_indexed_files(self, collection_name: str, limit: int = 100) -> list[str]:
         """Retrieves distinct file paths stored within collection."""
         try:
             clean_name = sanitize_collection_name(collection_name)
@@ -395,7 +435,11 @@ class QdrantManager:
                 with_payload=["file_path"],
                 with_vectors=False,
             )
-            files = {r.payload["file_path"] for r in records if r.payload and r.payload.get("file_path")}
+            files = {
+                r.payload["file_path"]
+                for r in records
+                if r.payload and r.payload.get("file_path")
+            }
             return sorted(list(files))
         except Exception as e:
             log.warning(f"Error scrolling indexed files: {e}")
@@ -406,8 +450,8 @@ class QdrantManager:
         collection_name: str,
         symbol_name: str,
         limit: int = 5,
-        path_prefix: Optional[str] = None,
-    ) -> List[AdalDocument]:
+        path_prefix: str | None = None,
+    ) -> list[AdalDocument]:
         """Looks up exact code symbol via indexed Qdrant payload filters."""
         try:
             clean_name = sanitize_collection_name(collection_name)
@@ -416,7 +460,11 @@ class QdrantManager:
                 return []
 
             scroll_filter = models.Filter(
-                must=[models.FieldCondition(key="symbol_name", match=models.MatchValue(value=clean_sym))]
+                must=[
+                    models.FieldCondition(
+                        key="symbol_name", match=models.MatchValue(value=clean_sym)
+                    )
+                ]
             )
             records, _ = self.client.scroll(
                 collection_name=clean_name,
@@ -426,8 +474,12 @@ class QdrantManager:
                 with_vectors=False,
             )
 
-            clean_prefix = path_prefix.strip().replace("\\", "/").rstrip("/") if path_prefix else ""
-            documents: List[AdalDocument] = []
+            clean_prefix = (
+                path_prefix.strip().replace("\\", "/").rstrip("/")
+                if path_prefix
+                else ""
+            )
+            documents: list[AdalDocument] = []
             for record in records:
                 payload = record.payload or {}
                 f_path = payload.get("file_path", "")
@@ -446,7 +498,9 @@ class QdrantManager:
                     "point_id": record.id,
                     "is_symbol_jump": True,
                 }
-                documents.append(AdalDocument(text=payload.get("text", ""), meta_data=meta))
+                documents.append(
+                    AdalDocument(text=payload.get("text", ""), meta_data=meta)
+                )
                 if len(documents) >= limit:
                     break
 
@@ -468,7 +522,11 @@ class QdrantManager:
                 return False
 
             delete_filter = models.Filter(
-                must=[models.FieldCondition(key="file_path", match=models.MatchValue(value=clean_file))]
+                must=[
+                    models.FieldCondition(
+                        key="file_path", match=models.MatchValue(value=clean_file)
+                    )
+                ]
             )
             self.client.delete(
                 collection_name=clean_name,
