@@ -1,36 +1,58 @@
-from typing import List, Optional
-
-from pydantic import BaseModel, Field, field_validator
-
 from backend.app.dto.document_dto import Document
 from backend.app.utils.repo_utils import validate_safe_git_url
+from pydantic import BaseModel, Field, field_validator
 
 
 class AsyncInitResponse(BaseModel):
     """Response returned when repository indexing is dispatched asynchronously."""
+
     status: str = Field(default="queued", description="Initial status of async job")
-    job_id: str = Field(..., description="Unique tracking identifier for the background indexing job")
+    job_id: str = Field(
+        ..., description="Unique tracking identifier for the background indexing job"
+    )
     message: str = Field(..., description="Status message")
     repo_url: str = Field(..., description="The repository being indexed")
-    slug: Optional[str] = Field(default=None, description="Canonical repository slug")
+    slug: str | None = Field(default=None, description="Canonical repository slug")
 
 
 class JobStatusResponse(BaseModel):
     """Response returned when polling background job status."""
+
     job_id: str = Field(..., description="Tracking job ID")
-    status: str = Field(..., description="'pending', 'processing', 'completed', or 'failed'")
+    status: str = Field(
+        ..., description="'pending', 'processing', 'completed', or 'failed'"
+    )
     progress: float = Field(default=0.0, description="Progress from 0.0 to 1.0")
-    message: str = Field(default="", description="Human-readable progress or error detail")
-    repo_url: Optional[str] = Field(default=None)
-    slug: Optional[str] = Field(default=None)
+    message: str = Field(
+        default="", description="Human-readable progress or error detail"
+    )
+    repo_url: str | None = Field(default=None)
+    slug: str | None = Field(default=None)
 
 
 class InitRequest(BaseModel):
     """Request payload to initialize and index a repository."""
-    repo_url: str = Field(..., min_length=1, max_length=512, description="GitHub repository URL or local directory path")
-    force_reindex: bool = Field(default=False, description="Whether to discard cached embeddings and re-index fresh")
-    github_token: Optional[str] = Field(default=None, max_length=256, description="Optional GitHub Personal Access Token for private repos")
-    session_id: Optional[str] = Field(default=None, max_length=128, description="Optional session identifier for multi-tenant isolation")
+
+    repo_url: str = Field(
+        ...,
+        min_length=1,
+        max_length=512,
+        description="GitHub repository URL or local directory path",
+    )
+    force_reindex: bool = Field(
+        default=False,
+        description="Whether to discard cached embeddings and re-index fresh",
+    )
+    github_token: str | None = Field(
+        default=None,
+        max_length=256,
+        description="Optional GitHub Personal Access Token for private repos",
+    )
+    session_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Optional session identifier for multi-tenant isolation",
+    )
 
     @field_validator("repo_url")
     @classmethod
@@ -46,17 +68,32 @@ class InitRequest(BaseModel):
 
 class InitResponse(BaseModel):
     """Response returned after repository indexing."""
-    status: str = Field(default="success", description="Status of the initialization request")
+
+    status: str = Field(
+        default="success", description="Status of the initialization request"
+    )
     message: str = Field(..., description="Descriptive status message")
     repo_url: str = Field(..., description="The repository that was indexed")
-    slug: Optional[str] = Field(default=None, description="Canonical repository slug")
+    slug: str | None = Field(default=None, description="Canonical repository slug")
 
 
 class QueryRequest(BaseModel):
     """Request payload to query an initialized repository with RAG."""
-    repo_url: str = Field(default="", max_length=512, description="Target repository URL or path")
-    query: str = Field(..., min_length=1, max_length=4096, description="User query or question about the repository")
-    session_id: Optional[str] = Field(default=None, max_length=128, description="Session identifier for multi-user isolation")
+
+    repo_url: str = Field(
+        default="", max_length=512, description="Target repository URL or path"
+    )
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=4096,
+        description="User query or question about the repository",
+    )
+    session_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Session identifier for multi-user isolation",
+    )
 
     @field_validator("query")
     @classmethod
@@ -65,7 +102,9 @@ class QueryRequest(BaseModel):
         if not cleaned:
             raise ValueError("query must not be empty or whitespace.")
         if len(cleaned) > 4096:
-            raise ValueError("query exceeds maximum permitted length of 4096 characters.")
+            raise ValueError(
+                "query exceeds maximum permitted length of 4096 characters."
+            )
         return cleaned
 
     @field_validator("repo_url")
@@ -81,35 +120,49 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     """Response payload containing RAG answer, step-by-step rationale, and source contexts."""
-    rationale: str = Field(default="", description="Reasoning and step-by-step thought process")
+
+    rationale: str = Field(
+        default="", description="Reasoning and step-by-step thought process"
+    )
     answer: str = Field(..., description="Final markdown answer generated by LLM")
-    contexts: List[Document] = Field(default_factory=list, description="Source context documents retrieved via Qdrant Hybrid Search")
+    contexts: list[Document] = Field(
+        default_factory=list,
+        description="Source context documents retrieved via Qdrant Hybrid Search",
+    )
 
 
 class ClearMemoryRequest(BaseModel):
     """Request payload to clear dialog turn memory for a specific session."""
-    session_id: Optional[str] = Field(default=None, description="Session identifier to clear")
+
+    session_id: str | None = Field(
+        default=None, description="Session identifier to clear"
+    )
 
 
 class ClearMemoryResponse(BaseModel):
     """Response returned when clearing dialog turn memory."""
+
     status: str = Field(default="success")
     message: str = Field(default="Memory cleared successfully")
 
 
-
 class ContextMessage(BaseModel):
     """A single conversation turn message."""
+
     role: str = Field(..., description="Role of the sender ('user' or 'assistant')")
     content: str = Field(..., description="Text content of the message")
 
 
 class SetContextRequest(BaseModel):
     """Request payload to restore conversation dialogue history."""
-    messages: List[ContextMessage] = Field(default_factory=list, description="Ordered conversation messages")
+
+    messages: list[ContextMessage] = Field(
+        default_factory=list, description="Ordered conversation messages"
+    )
 
 
 class SetContextResponse(BaseModel):
     """Response returned when setting or restoring conversation history."""
+
     status: str = Field(default="success")
     turns: int = Field(default=0, description="Total conversation turns restored")
