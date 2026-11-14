@@ -4,14 +4,13 @@ Provides categorized lists of directories, files, and file extensions that are
 ignored or included during repository scanning and RAG preprocessing.
 """
 
-from typing import List, Set
 
 # ==============================================================================
 # Directory Filtering
 # ==============================================================================
 
 # Directories that should never be scanned for code / docs
-IGNORED_DIRS: Set[str] = {
+IGNORED_DIRS: set[str] = {
     # Version Control
     ".git",
     ".github",
@@ -80,7 +79,7 @@ IGNORED_DIRS: Set[str] = {
 # ==============================================================================
 
 # Large machine-generated metadata, lockfiles, minified files, or binaries that pollute context
-IGNORED_FILES: Set[str] = {
+IGNORED_FILES: set[str] = {
     # Lockfiles (high-token, machine-generated noise)
     "package-lock.json",
     "pnpm-lock.yaml",
@@ -130,7 +129,7 @@ IGNORED_FILE_SUFFIXES: tuple = (
 # Target File Extensions for Code and Documentation Indexing
 # ==============================================================================
 
-CODE_EXTENSIONS: List[str] = [
+CODE_EXTENSIONS: list[str] = [
     ".py",
     ".js",
     ".jsx",
@@ -156,7 +155,7 @@ CODE_EXTENSIONS: List[str] = [
     ".dart",
 ]
 
-DOC_EXTENSIONS: List[str] = [
+DOC_EXTENSIONS: list[str] = [
     ".md",
     ".txt",
     ".rst",
@@ -166,7 +165,7 @@ DOC_EXTENSIONS: List[str] = [
     ".toml",
 ]
 
-ALL_INDEXABLE_EXTENSIONS: List[str] = CODE_EXTENSIONS + DOC_EXTENSIONS
+ALL_INDEXABLE_EXTENSIONS: list[str] = CODE_EXTENSIONS + DOC_EXTENSIONS
 
 # ==============================================================================
 # Size and Length Thresholds
@@ -177,4 +176,3 @@ MAX_FILE_SIZE_BYTES: int = 250 * 1024
 
 # Minimum characters for a file to be indexed (avoids empty stubs or placeholder files)
 MIN_FILE_CHAR_LENGTH: int = 10
-

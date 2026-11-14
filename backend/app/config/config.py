@@ -1,16 +1,14 @@
 import logging
 import os
-from typing import Any, Dict
-
-from dotenv import load_dotenv
+from typing import Any
 
 from backend.app.config.constants import (
     ALL_INDEXABLE_EXTENSIONS,
     CODE_EXTENSIONS,
     DOC_EXTENSIONS,
     IGNORED_DIRS,
-    IGNORED_FILES,
     IGNORED_FILE_SUFFIXES,
+    IGNORED_FILES,
     MAX_FILE_SIZE_BYTES,
     MIN_FILE_CHAR_LENGTH,
 )
@@ -21,6 +19,7 @@ from backend.app.llm_models.groq_client import (
     MultiProviderLLMClient,
 )
 from backend.app.utils.env_utils import build_postgres_url
+from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +41,10 @@ def create_embedder_client() -> GeminiEmbedderClient:
             api_key=os.getenv("GEMINI_API_KEY"),
             dimensions=DEFAULT_EMBEDDING_DIMENSIONS,
             model_name=DEFAULT_EMBEDDING_MODEL,
-            fallback_models=[DEFAULT_FALLBACK_EMBEDDING_MODEL, "gemini-embedding-2-preview"],
+            fallback_models=[
+                DEFAULT_FALLBACK_EMBEDDING_MODEL,
+                "gemini-embedding-2-preview",
+            ],
             max_batch_size=DEFAULT_BATCH_SIZE,
         )
     except Exception as e:
@@ -63,7 +65,7 @@ def create_generator_client() -> MultiProviderLLMClient:
         raise
 
 
-config: Dict[str, Any] = {
+config: dict[str, Any] = {
     "embedder": {
         "batch_size": DEFAULT_BATCH_SIZE,
         "model_client": create_embedder_client,
@@ -102,23 +104,22 @@ config: Dict[str, Any] = {
 }
 
 __all__ = [
-    "config",
-    "create_embedder_client",
-    "create_generator_client",
+    "ALL_INDEXABLE_EXTENSIONS",
+    "CODE_EXTENSIONS",
+    "DEFAULT_BATCH_SIZE",
+    "DEFAULT_EMBEDDING_DIMENSIONS",
     "DEFAULT_EMBEDDING_MODEL",
     "DEFAULT_FALLBACK_EMBEDDING_MODEL",
-    "DEFAULT_EMBEDDING_DIMENSIONS",
-    "DEFAULT_GROQ_MODEL",
     "DEFAULT_GENERATION_MODELS",
-    "DEFAULT_BATCH_SIZE",
+    "DEFAULT_GROQ_MODEL",
+    "DOC_EXTENSIONS",
     "IGNORED_DIRS",
     "IGNORED_FILES",
     "IGNORED_FILE_SUFFIXES",
-    "CODE_EXTENSIONS",
-    "DOC_EXTENSIONS",
-    "ALL_INDEXABLE_EXTENSIONS",
     "MAX_FILE_SIZE_BYTES",
     "MIN_FILE_CHAR_LENGTH",
     "CustomGroqClient",
+    "config",
+    "create_embedder_client",
+    "create_generator_client",
 ]
-
