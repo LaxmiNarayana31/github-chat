@@ -1,9 +1,10 @@
 """Tests for database models, connection engine, and session management."""
 
 import uuid
-import pytest
-from sqlalchemy import text
 
+from backend.app.models.conversation_turn import ConversationTurn
+from backend.app.models.indexing_job import IndexingJob
+from backend.app.models.repository import Repository
 from backend.config.database import (
     GUEST_MAX_REQUESTS,
     USER_DAILY_REQUEST_LIMIT,
@@ -12,9 +13,7 @@ from backend.config.database import (
     get_engine,
     init_db,
 )
-from backend.app.models.conversation_turn import ConversationTurn
-from backend.app.models.indexing_job import IndexingJob
-from backend.app.models.repository import Repository
+from sqlalchemy import text
 
 
 def test_database_initialization():
@@ -83,7 +82,9 @@ def test_database_models_crud():
         assert job_res is not None
         assert job_res.status == "completed"
 
-        turn_res = session.query(ConversationTurn).filter_by(session_id=session_id).first()
+        turn_res = (
+            session.query(ConversationTurn).filter_by(session_id=session_id).first()
+        )
         assert turn_res is not None
         assert "indexing" in turn_res.user_query.lower()
 

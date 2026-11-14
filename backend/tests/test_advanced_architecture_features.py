@@ -12,15 +12,19 @@
 
 import subprocess
 from unittest.mock import MagicMock, patch
-import pytest
-from adalflow.core.types import Document as AdalDocument
 
-from backend.app.embeddings.qdrant_manager import QdrantManager, sanitize_collection_name
+from adalflow.core.types import Document as AdalDocument
+from backend.app.embeddings.qdrant_manager import (
+    QdrantManager,
+    sanitize_collection_name,
+)
 from backend.app.pipelines.ast_chunker import ASTChunker
 from backend.app.pipelines.data_pipeline import sync_git_delta
 from backend.app.rag.agentic_rag import LangGraphAgenticRAG
+from backend.app.rag.rag import RAG
 from backend.app.rag.repo_map import RepoMapGenerator
 from backend.app.services.redis_manager import RedisCacheManager
+from backend.app.utils.repo_utils import get_repo_slug, sanitize_collection_slug
 
 
 def test_qdrant_symbol_lookup_and_file_deletion():
@@ -85,9 +89,16 @@ def test_redis_reconcile_orphaned_jobs():
     mgr = RedisCacheManager(redis_url="")
     mgr.clear()
 
-    mgr.set_job_status("job_stuck_1", {"status": "processing", "repo_url": "https://github.com/org/repo1"})
-    mgr.set_job_status("job_stuck_2", {"status": "pending", "repo_url": "https://github.com/org/repo2"})
-    mgr.set_job_status("job_ok", {"status": "completed", "repo_url": "https://github.com/org/repo3"})
+    mgr.set_job_status(
+        "job_stuck_1",
+        {"status": "processing", "repo_url": "https://github.com/org/repo1"},
+    )
+    mgr.set_job_status(
+        "job_stuck_2", {"status": "pending", "repo_url": "https://github.com/org/repo2"}
+    )
+    mgr.set_job_status(
+        "job_ok", {"status": "completed", "repo_url": "https://github.com/org/repo3"}
+    )
 
     reconciled_count = mgr.reconcile_orphaned_jobs()
     assert reconciled_count == 2
@@ -131,14 +142,28 @@ def run_worker_task(task_id: str):
 
 def test_extract_symbol_candidates():
     """Verify regex-based candidate symbol extraction for deterministic jump-to-definition."""
-    assert "calculate_sha256" in LangGraphAgenticRAG._extract_symbol_candidates("where is `calculate_sha256` defined?")
-    assert "ASTChunker" in LangGraphAgenticRAG._extract_symbol_candidates("where is class ASTChunker defined?")
-    assert "reconcile_orphaned_jobs" in LangGraphAgenticRAG._extract_symbol_candidates("def reconcile_orphaned_jobs in redis_manager")
-    assert "lookup_symbol" in LangGraphAgenticRAG._extract_symbol_candidates("find lookup_symbol")
-    assert "process_stream" in LangGraphAgenticRAG._extract_symbol_candidates("can you explain process_stream()?")
-    assert "RedisLockManager" in LangGraphAgenticRAG._extract_symbol_candidates("RedisLockManager")
+    assert "calculate_sha256" in LangGraphAgenticRAG._extract_symbol_candidates(
+        "where is `calculate_sha256` defined?"
+    )
+    assert "ASTChunker" in LangGraphAgenticRAG._extract_symbol_candidates(
+        "where is class ASTChunker defined?"
+    )
+    assert "reconcile_orphaned_jobs" in LangGraphAgenticRAG._extract_symbol_candidates(
+        "def reconcile_orphaned_jobs in redis_manager"
+    )
+    assert "lookup_symbol" in LangGraphAgenticRAG._extract_symbol_candidates(
+        "find lookup_symbol"
+    )
+    assert "process_stream" in LangGraphAgenticRAG._extract_symbol_candidates(
+        "can you explain process_stream()?"
+    )
+    assert "RedisLockManager" in LangGraphAgenticRAG._extract_symbol_candidates(
+        "RedisLockManager"
+    )
 
-    generic = LangGraphAgenticRAG._extract_symbol_candidates("how do I run and test the application?")
+    generic = LangGraphAgenticRAG._extract_symbol_candidates(
+        "how do I run and test the application?"
+    )
     assert len(generic) == 0
 
 
@@ -176,7 +201,9 @@ def test_sync_git_delta():
     assert "backend/app/main.py" in delta["modified_files"]
     assert "backend/app/new_feature.py" in delta["added_files"]
 
-    deleted_paths = [call.args[1] for call in mock_qdrant.delete_points_by_file_path.call_args_list]
+    deleted_paths = [
+        call.args[1] for call in mock_qdrant.delete_points_by_file_path.call_args_list
+    ]
     assert "backend/app/deprecated.py" in deleted_paths
     assert "backend/app/main.py" in deleted_paths
     assert "old_util.py" in deleted_paths
@@ -202,10 +229,14 @@ def test_redis_ingest_checkpoints():
 
 def test_extract_path_scope():
     """Verify subsystem and path filter extraction from natural user questions."""
-    scope1 = LangGraphAgenticRAG._extract_path_scope("path:drivers/net/ethernet how does rx packet ring work?")
+    scope1 = LangGraphAgenticRAG._extract_path_scope(
+        "path:drivers/net/ethernet how does rx packet ring work?"
+    )
     assert scope1 == "drivers/net/ethernet"
 
-    scope2 = LangGraphAgenticRAG._extract_path_scope("how does page table compaction work in mm/memory.c?")
+    scope2 = LangGraphAgenticRAG._extract_path_scope(
+        "how does page table compaction work in mm/memory.c?"
+    )
     assert scope2 == "mm/memory.c"
 
     scope3 = LangGraphAgenticRAG._extract_path_scope("explain the locking design")
@@ -219,24 +250,39 @@ def test_qdrant_subsystem_path_scoping():
 
     doc_net = AdalDocument(
         text="int net_packet_alloc(void) { return 0; }",
-        meta_data={"file_path": "drivers/net/ethernet/intel.c", "symbol_name": "net_packet_alloc", "symbol_type": "function"},
+        meta_data={
+            "file_path": "drivers/net/ethernet/intel.c",
+            "symbol_name": "net_packet_alloc",
+            "symbol_type": "function",
+        },
     )
     doc_net.vector = [0.05] * 768
 
     doc_fs = AdalDocument(
         text="int net_packet_alloc(void) { return 1; }",
-        meta_data={"file_path": "fs/ext4/super.c", "symbol_name": "net_packet_alloc", "symbol_type": "function"},
+        meta_data={
+            "file_path": "fs/ext4/super.c",
+            "symbol_name": "net_packet_alloc",
+            "symbol_type": "function",
+        },
     )
     doc_fs.vector = [0.05] * 768
 
-    manager.index_documents(collection_name=col, documents=[doc_net, doc_fs], dense_dimension=768, force_reindex=True)
+    manager.index_documents(
+        collection_name=col,
+        documents=[doc_net, doc_fs],
+        dense_dimension=768,
+        force_reindex=True,
+    )
 
     # Without filter -> returns both matches
     all_matches = manager.lookup_symbol(col, "net_packet_alloc")
     assert len(all_matches) == 2
 
     # With subsystem path prefix filter -> returns only the drivers/net match
-    net_matches = manager.lookup_symbol(col, "net_packet_alloc", path_prefix="drivers/net")
+    net_matches = manager.lookup_symbol(
+        col, "net_packet_alloc", path_prefix="drivers/net"
+    )
     assert len(net_matches) == 1
     assert "drivers/net" in net_matches[0].meta_data["file_path"]
 
@@ -262,3 +308,36 @@ def test_repomap_mega_repo_capping():
     rendered = repo_map_gen.generate_repo_map()
     assert isinstance(rendered, str)
     assert len(rendered) > 0
+
+
+def test_commit_sha_detection_and_db_sync():
+    """Verify that get_git_commit_sha and RAG commit tracking reuse identical commits and detect new commits."""
+    with (
+        patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls,
+        patch("backend.app.rag.rag.MemoriManager"),
+        patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls,
+        patch("backend.app.rag.rag.adal.Embedder"),
+        patch("backend.app.rag.rag.adal.Generator"),
+        patch("backend.app.rag.rag.LangGraphAgenticRAG"),
+        patch("backend.app.rag.rag.get_git_commit_sha") as mock_sha,
+    ):
+        mock_qdrant = MagicMock()
+        mock_qdrant_cls.return_value = mock_qdrant
+        mock_db = MagicMock()
+        mock_db_cls.return_value = mock_db
+
+        rag = RAG(entity_id="test_user", process_id="test_proc")
+
+        repo_url = "https://github.com/myorg/myrepo"
+        slug = get_repo_slug(repo_url)
+        col_name = sanitize_collection_slug(slug)
+
+        # Mock commit sha returned
+        mock_sha.return_value = "commit_sha_12345678"
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.get_collection_point_count.return_value = 50
+
+        # When collection exists with points and same commit, prepare_retriever reuses without re-indexing
+        rag.prepare_retriever(repo_url, force_reindex=False)
+        assert rag.retriever == mock_qdrant
+        mock_db.prepare_database.assert_not_called()

@@ -1,12 +1,16 @@
 """Unit tests for ASTChunker code splitting and symbol metadata extraction."""
 
-from typing import Any, Dict
-import pytest
+from typing import Any
 
+from adalflow.components.data_process import TextSplitter, ToEmbeddings
 from backend.app.pipelines.ast_chunker import ASTChunker
+from backend.app.pipelines.data_pipeline import (
+    prepare_data_pipeline,
+    prepare_embedding_pipeline,
+)
 
 
-def get_meta(doc: Any) -> Dict[str, Any]:
+def get_meta(doc: Any) -> dict[str, Any]:
     """Safely extract metadata dictionary from a document."""
     if hasattr(doc, "meta_data") and isinstance(doc.meta_data, dict):
         return doc.meta_data
@@ -53,7 +57,9 @@ class DataProcessor:
         assert c.text.startswith("# [Context: sample.py")
 
     # Verify function chunk has context imports
-    func_chunk = next(c for c in chunks if get_meta(c).get("symbol_name") == "compute_total")
+    func_chunk = next(
+        c for c in chunks if get_meta(c).get("symbol_name") == "compute_total"
+    )
     assert "Context Imports: os | sys" in func_chunk.text
     assert "def compute_total(items):" in func_chunk.text
 
@@ -74,7 +80,9 @@ class AuthService {
     }
 }
 """
-    chunks = chunker.chunk_file(ts_code, file_path="components/UserCard.tsx", file_type="tsx")
+    chunks = chunker.chunk_file(
+        ts_code, file_path="components/UserCard.tsx", file_type="tsx"
+    )
     assert len(chunks) >= 1
     symbols = {str(get_meta(c).get("symbol_name", "")) for c in chunks}
     assert any("UserCard" in s or "AuthService" in s for s in symbols)
@@ -84,9 +92,6 @@ class AuthService {
 
 def test_embedding_pipeline_bypasses_text_splitter():
     """Verify prepare_embedding_pipeline uses ToEmbeddings directly without TextSplitter."""
-    from backend.app.pipelines.data_pipeline import prepare_embedding_pipeline, prepare_data_pipeline
-    from adalflow.components.data_process import ToEmbeddings, TextSplitter
-
     emb_pipeline = prepare_embedding_pipeline()
     assert isinstance(emb_pipeline, ToEmbeddings)
 
@@ -124,4 +129,3 @@ func CalculateTotal(prices []float64) float64 {
     assert len(rs_chunks) >= 1
     rs_symbols = [get_meta(c).get("symbol_name") for c in rs_chunks]
     assert "process_data" in rs_symbols
-

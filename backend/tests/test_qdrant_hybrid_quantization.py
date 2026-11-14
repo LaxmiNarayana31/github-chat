@@ -1,10 +1,11 @@
 """Unit tests verifying Qdrant Hybrid Search (Dense + BM25 RRF) and INT8 quantization."""
 
 from adalflow.core.types import Document as AdalDocument
-import pytest
+from backend.app.embeddings.qdrant_manager import (
+    QdrantManager,
+    sanitize_collection_name,
+)
 from qdrant_client import models
-
-from backend.app.embeddings.qdrant_manager import QdrantManager, sanitize_collection_name
 
 
 def test_qdrant_hybrid_collection_creation_and_quantization():
@@ -12,11 +13,15 @@ def test_qdrant_hybrid_collection_creation_and_quantization():
     manager = QdrantManager(url=None, storage_path=None)  # in-memory
     col_name = "test_hybrid_quant"
 
-    created_name = manager.get_or_create_collection(col_name, dense_dimension=768, force_recreate=True)
+    created_name = manager.get_or_create_collection(
+        col_name, dense_dimension=768, force_recreate=True
+    )
     assert created_name.endswith(col_name)
 
     info = manager.client.get_collection(created_name)
-    assert info is not None and info.config is not None and info.config.params is not None
+    assert (
+        info is not None and info.config is not None and info.config.params is not None
+    )
 
     vectors_cfg = info.config.params.vectors
     assert isinstance(vectors_cfg, dict)
@@ -70,4 +75,3 @@ def test_qdrant_hybrid_indexing_and_search_execution():
     top_meta = results[0].meta_data or {}
     assert "crypto/hash.py" in str(top_meta.get("file_path", ""))
     assert top_meta.get("rrf_score") is not None
-

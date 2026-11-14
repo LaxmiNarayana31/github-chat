@@ -1,8 +1,6 @@
 """Unit tests for RepoMapGenerator and PageRank architectural ranking."""
 
-import pytest
 from adalflow.core.types import Document as AdalDocument
-
 from backend.app.rag.repo_map import RepoMapGenerator
 
 
@@ -75,4 +73,3 @@ def test_repo_map_focus_query_boosting():
     rendered = gen.generate_repo_map(focus_query="how does setup_auth work?")
 
     assert "auth/security.py" in rendered
-

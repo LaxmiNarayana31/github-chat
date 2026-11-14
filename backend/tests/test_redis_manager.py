@@ -1,6 +1,3 @@
-import time
-import pytest
-
 from backend.app.services.redis_manager import RedisCacheManager
 
 
@@ -29,7 +26,12 @@ def test_redis_query_cache():
     payload = {
         "answer": "React Fiber handles reconciliation in ReactFiberWorkLoop.js",
         "rationale": "Located in packages/react-reconciler",
-        "contexts": [{"text": "function workLoopConcurrent()", "meta_data": {"file_path": "ReactFiberWorkLoop.js"}}],
+        "contexts": [
+            {
+                "text": "function workLoopConcurrent()",
+                "meta_data": {"file_path": "ReactFiberWorkLoop.js"},
+            }
+        ],
     }
 
     assert mgr.get_query_cache(repo_slug, query) is None
@@ -80,4 +82,3 @@ def test_redis_job_status():
     assert loaded["status"] == "chunking"
     assert loaded["progress"] == 45
     assert "updated_at" in loaded
-

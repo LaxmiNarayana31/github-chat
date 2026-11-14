@@ -1,7 +1,6 @@
 """Unit tests for Git-blob content-addressable deduplication."""
 
 from unittest.mock import MagicMock
-import pytest
 
 from backend.app.pipelines.blob_deduplicator import BlobDeduplicator
 
@@ -43,4 +42,3 @@ def test_blob_deduplicator_cache_cycle():
 
     dedup.cache_chunks(blob_hash, test_chunks)
     mock_redis.setex.assert_called_once()
-

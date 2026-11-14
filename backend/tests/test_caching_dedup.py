@@ -1,19 +1,20 @@
 from unittest.mock import MagicMock, patch
-import pytest
 
 from backend.app.rag.rag import RAG
+from backend.app.services.rag_service import RAGService
 from backend.app.utils.repo_utils import get_repo_slug, sanitize_collection_slug
 
 
 def test_skip_reembedding_when_collection_exists():
     """Verify that if Qdrant already contains persistent points for the collection, prepare_retriever skips indexing."""
-    with patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls, \
-         patch("backend.app.rag.rag.MemoriManager") as mock_memori_cls, \
-         patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls, \
-         patch("backend.app.rag.rag.adal.Embedder"), \
-         patch("backend.app.rag.rag.adal.Generator"), \
-         patch("backend.app.rag.rag.LangGraphAgenticRAG"):
-
+    with (
+        patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls,
+        patch("backend.app.rag.rag.MemoriManager") as mock_memori_cls,
+        patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls,
+        patch("backend.app.rag.rag.adal.Embedder"),
+        patch("backend.app.rag.rag.adal.Generator"),
+        patch("backend.app.rag.rag.LangGraphAgenticRAG"),
+    ):
         mock_qdrant = MagicMock()
         mock_qdrant_cls.return_value = mock_qdrant
         mock_db = MagicMock()
@@ -47,14 +48,14 @@ def test_skip_reembedding_when_collection_exists():
 
 def test_force_reindex_rebuilds_collection():
     """Verify that when force_reindex=True, indexing executes even if collection exists."""
-    with patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls, \
-         patch("backend.app.rag.rag.MemoriManager"), \
-         patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls, \
-         patch("backend.app.rag.rag.adal.Embedder"), \
-         patch("backend.app.rag.rag.adal.Generator"), \
-         patch("backend.app.rag.rag.LangGraphAgenticRAG"):
-
-
+    with (
+        patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls,
+        patch("backend.app.rag.rag.MemoriManager"),
+        patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls,
+        patch("backend.app.rag.rag.adal.Embedder"),
+        patch("backend.app.rag.rag.adal.Generator"),
+        patch("backend.app.rag.rag.LangGraphAgenticRAG"),
+    ):
         mock_qdrant = MagicMock()
         mock_qdrant_cls.return_value = mock_qdrant
         mock_db = MagicMock()
@@ -77,16 +78,16 @@ def test_force_reindex_rebuilds_collection():
 
 def test_same_repo_url_multi_user_deduplication():
     """Verify that when User A indexes a repo, User B with the same URL completely bypasses chunking and embedding."""
-    from backend.app.services.rag_service import RAGService
     service = RAGService.get_instance()
 
-    with patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls, \
-         patch("backend.app.rag.rag.MemoriManager"), \
-         patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls, \
-         patch("backend.app.rag.rag.adal.Embedder"), \
-         patch("backend.app.rag.rag.adal.Generator"), \
-         patch("backend.app.rag.rag.LangGraphAgenticRAG"):
-
+    with (
+        patch("backend.app.rag.rag.QdrantManager") as mock_qdrant_cls,
+        patch("backend.app.rag.rag.MemoriManager"),
+        patch("backend.app.rag.rag.DatabaseManager") as mock_db_cls,
+        patch("backend.app.rag.rag.adal.Embedder"),
+        patch("backend.app.rag.rag.adal.Generator"),
+        patch("backend.app.rag.rag.LangGraphAgenticRAG"),
+    ):
         mock_qdrant = MagicMock()
         mock_qdrant_cls.return_value = mock_qdrant
         mock_db = MagicMock()
@@ -107,11 +108,13 @@ def test_same_repo_url_multi_user_deduplication():
         mock_qdrant.get_collection_point_count.return_value = 120
 
         # User B provides same URL (even with trailing .git or whitespace)
-        service.initialize_repository(repo_url="https://github.com/pallets/flask.git", session_id="user_b")
+        service.initialize_repository(
+            repo_url="https://github.com/pallets/flask.git", session_id="user_b"
+        )
 
         # Crucial: prepare_database was NOT called again! call_count remains 1!
         assert mock_db.prepare_database.call_count == 1
         # User B's session now has flask ready
-        assert service._session_repos.get("user_b") == "https://github.com/pallets/flask"
-
-
+        assert (
+            service._session_repos.get("user_b") == "https://github.com/pallets/flask"
+        )

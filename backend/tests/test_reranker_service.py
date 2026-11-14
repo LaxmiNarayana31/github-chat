@@ -1,8 +1,6 @@
 """Unit tests for RerankerService cross-encoder ranking."""
 
-import pytest
 from adalflow.core.types import Document as AdalDocument
-
 from backend.app.services.reranker_service import RerankerService
 
 
@@ -18,8 +16,12 @@ def test_reranker_service_ranks_relevant_code_highest():
     reranker = RerankerService.get_instance()
 
     docs = [
-        AdalDocument(text="def compute_square_root(x):\n    import math\n    return math.sqrt(x)"),
-        AdalDocument(text="The weather in Paris is pleasant during autumn with occasional rain."),
+        AdalDocument(
+            text="def compute_square_root(x):\n    import math\n    return math.sqrt(x)"
+        ),
+        AdalDocument(
+            text="The weather in Paris is pleasant during autumn with occasional rain."
+        ),
         AdalDocument(text="class UserDatabase:\n    def connect(self): pass"),
     ]
 

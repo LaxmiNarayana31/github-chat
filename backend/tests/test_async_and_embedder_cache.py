@@ -1,13 +1,12 @@
 import time
 from unittest.mock import MagicMock, patch
-import pytest
-from adalflow.core.types import ModelType
-from fastapi.testclient import TestClient
 
+from adalflow.core.types import ModelType
 from backend.app.llm_models.gemini_embedder import GeminiEmbedderClient
+from backend.app.services.rag_service import RAGService
 from backend.app.services.redis_manager import RedisCacheManager
 from backend.main import app
-from backend.app.services.rag_service import RAGService
+from fastapi.testclient import TestClient
 
 
 def test_gemini_embedder_redis_cache_hit():
@@ -54,7 +53,9 @@ def test_gemini_embedder_caches_new_embeddings():
     mock_item.values = computed_vector
     mock_response.embeddings = [mock_item]
 
-    with patch.object(embedder, "_embed_batch_with_retry_and_fallback", return_value=mock_response):
+    with patch.object(
+        embedder, "_embed_batch_with_retry_and_fallback", return_value=mock_response
+    ):
         results = embedder.call({"input": [new_text]}, model_type=ModelType.EMBEDDER)
 
     assert len(results) == 1
@@ -69,7 +70,9 @@ def test_rag_service_async_init_and_status():
     """Verify background repository indexing creates job tracking and completes successfully."""
     service = RAGService.get_instance()
 
-    with patch.object(service, "initialize_repository", return_value="https://github.com/psf/requests"):
+    with patch.object(
+        service, "initialize_repository", return_value="https://github.com/psf/requests"
+    ):
         job_id = service.initialize_repository_async(
             repo_url="https://github.com/psf/requests",
             session_id="test_session_async",
@@ -99,10 +102,17 @@ def test_fastapi_async_init_and_status_routes():
     """Verify /init/async and /status/{job_id} REST endpoints work as expected."""
     client = TestClient(app)
 
-    with patch.object(RAGService.get_instance(), "initialize_repository_async", return_value="job_test999"):
+    with patch.object(
+        RAGService.get_instance(),
+        "initialize_repository_async",
+        return_value="job_test999",
+    ):
         response = client.post(
             "/init/async",
-            json={"repo_url": "https://github.com/psf/requests", "session_id": "test_api"},
+            json={
+                "repo_url": "https://github.com/psf/requests",
+                "session_id": "test_api",
+            },
         )
         assert response.status_code == 200
         data = response.json()
