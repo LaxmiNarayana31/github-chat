@@ -1,8 +1,9 @@
 """Conversation turn ORM model for GithubChat."""
 
-from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, Index, Integer, String, Text
+from datetime import UTC, datetime
+
 from backend.config.database import Base
+from sqlalchemy import Column, DateTime, Index, Integer, String, Text
 
 
 class ConversationTurn(Base):
@@ -19,4 +20,4 @@ class ConversationTurn(Base):
     user_query = Column(Text, nullable=False)
     assistant_answer = Column(Text, nullable=False)
     rationale = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
