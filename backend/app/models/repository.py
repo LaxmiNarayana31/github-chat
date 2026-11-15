@@ -1,8 +1,9 @@
 """Repository ORM model for GithubChat."""
 
-from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, Integer, String
+from datetime import UTC, datetime
+
 from backend.config.database import Base
+from sqlalchemy import Boolean, Column, DateTime, Integer, String
 
 
 class Repository(Base):
@@ -17,10 +18,10 @@ class Repository(Base):
     commit_sha = Column(String(64), nullable=True)
     is_indexed = Column(Boolean, default=False, nullable=False)
     total_chunks = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC), nullable=False)
     updated_at = Column(
         DateTime,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
