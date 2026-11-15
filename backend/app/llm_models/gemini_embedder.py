@@ -2,15 +2,15 @@ import logging
 import os
 import random
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 from adalflow.core.model_client import ModelClient
-from adalflow.core.types import Embedding, EmbedderOutput, ModelType
+from adalflow.core.types import EmbedderOutput, Embedding, ModelType
 from adalflow.utils import printc
+from backend.app.services.redis_manager import RedisCacheManager
 from google import genai
 from google.genai import types
-
-from backend.app.services.redis_manager import RedisCacheManager
 
 log = logging.getLogger(__name__)
 
@@ -20,10 +20,10 @@ class GeminiEmbedderClient(ModelClient):
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         dimensions: int = 768,
         model_name: str = "gemini-embedding-2",
-        fallback_models: Optional[List[str]] = None,
+        fallback_models: list[str] | None = None,
         max_batch_size: int = 100,
     ):
         super().__init__()
@@ -79,9 +79,9 @@ class GeminiEmbedderClient(ModelClient):
 
     def _embed_batch_with_retry_and_fallback(
         self,
-        texts: List[str],
-        model: Optional[str] = None,
-        task_type: Optional[str] = None,
+        texts: list[str],
+        model: str | None = None,
+        task_type: str | None = None,
         max_retries: int = 5,
         base_delay: float = 1.5,
     ) -> Any:
@@ -100,14 +100,16 @@ class GeminiEmbedderClient(ModelClient):
 
         for model_candidate in candidate_models:
             is_embedding_2 = "gemini-embedding-2" in (model_candidate or "").lower()
-            config_kwargs: Dict[str, Any] = {}
+            config_kwargs: dict[str, Any] = {}
             # gemini-embedding-2 does not support task_type parameter in EmbedContentConfig
             if not is_embedding_2 and task_type:
                 config_kwargs["task_type"] = task_type
             if self.dimensions:
                 config_kwargs["output_dimensionality"] = self.dimensions
 
-            config_obj = types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
+            config_obj = (
+                types.EmbedContentConfig(**config_kwargs) if config_kwargs else None
+            )
             contents_to_send: Any = sanitized_batch
 
             for attempt in range(max_retries):
@@ -136,7 +138,9 @@ class GeminiEmbedderClient(ModelClient):
                         ]
                     )
                     if is_transient and attempt < max_retries - 1:
-                        sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0.1, 1.0)
+                        sleep_time = (base_delay * (2**attempt)) + random.uniform(
+                            0.1, 1.0
+                        )
                         log.warning(
                             f"GeminiEmbedder: Retry {attempt + 1}/{max_retries} on model '{model_candidate}' "
                             f"due to rate limit/transient error: {e}. Sleeping {sleep_time:.2f}s"
@@ -148,19 +152,25 @@ class GeminiEmbedderClient(ModelClient):
                         )
                         break  # Break out of retry loop to try the next model candidate
 
-            log.warning(f"GeminiEmbedder: Attempting failover from '{model_candidate}' to next fallback model...")
+            log.warning(
+                f"GeminiEmbedder: Attempting failover from '{model_candidate}' to next fallback model..."
+            )
 
         # If all candidates fail
-        log.error(f"GeminiEmbedder: All candidate models {candidate_models} failed to embed batch. Last error: {last_exception}")
+        log.error(
+            f"GeminiEmbedder: All candidate models {candidate_models} failed to embed batch. Last error: {last_exception}"
+        )
         if last_exception is not None:
             raise last_exception
-        raise RuntimeError(f"GeminiEmbedder: All candidate models {candidate_models} failed to embed batch.")
+        raise RuntimeError(
+            f"GeminiEmbedder: All candidate models {candidate_models} failed to embed batch."
+        )
 
     def _embed_single_with_retry(
         self,
         text: str,
-        model: Optional[str] = None,
-        task_type: Optional[str] = None,
+        model: str | None = None,
+        task_type: str | None = None,
         max_retries: int = 5,
         base_delay: float = 1.5,
     ) -> Any:
@@ -175,9 +185,9 @@ class GeminiEmbedderClient(ModelClient):
 
     def parse_embedding_response(self, response: Any) -> EmbedderOutput:
         """Parse single or batched embedding responses into EmbedderOutput format and validate dimensions."""
-        embeddings: List[Embedding] = []
+        embeddings: list[Embedding] = []
 
-        def extract_values(item: Any) -> Optional[List[float]]:
+        def extract_values(item: Any) -> list[float] | None:
             val = getattr(item, "values", None)
             if val is not None and isinstance(val, (list, tuple)):
                 return list(val)
@@ -207,7 +217,11 @@ class GeminiEmbedderClient(ModelClient):
         if isinstance(response, list):
             for res in response:
                 embs = getattr(res, "embeddings", None)
-                if embs is not None and isinstance(embs, (list, tuple)) and len(embs) > 0:
+                if (
+                    embs is not None
+                    and isinstance(embs, (list, tuple))
+                    and len(embs) > 0
+                ):
                     flat_items.extend(embs)
                 else:
                     flat_items.append(res)
@@ -227,17 +241,22 @@ class GeminiEmbedderClient(ModelClient):
                     )
                 embeddings.append(Embedding(index=idx, embedding=vals))
             else:
-                log.error(f"GeminiEmbedder: Failed to extract vector for item {idx}: {type(item)}")
+                log.error(
+                    f"GeminiEmbedder: Failed to extract vector for item {idx}: {type(item)}"
+                )
 
-        printc(f"GeminiEmbedder: Successfully parsed {len(embeddings)} embeddings", color="blue")
+        printc(
+            f"GeminiEmbedder: Successfully parsed {len(embeddings)} embeddings",
+            color="blue",
+        )
         return EmbedderOutput(data=embeddings)
 
     def convert_inputs_to_api_kwargs(
         self,
-        input: Optional[Any] = None,
-        model_kwargs: Dict = {},
+        input: Any | None = None,
+        model_kwargs: dict = {},
         model_type: ModelType = ModelType.UNDEFINED,
-    ) -> Dict:
+    ) -> dict:
         """Convert inputs to API kwargs for embedding."""
         final_model_kwargs = model_kwargs.copy()
         if model_type == ModelType.EMBEDDER:
@@ -257,36 +276,46 @@ class GeminiEmbedderClient(ModelClient):
             )
         return final_model_kwargs
 
-    def _extract_vectors_from_batch_result(self, result: Any) -> List[List[float]]:
+    def _extract_vectors_from_batch_result(self, result: Any) -> list[list[float]]:
         """Extract float vector lists from Google GenAI EmbedContentResponse."""
         if not result:
             return []
-        vectors: List[List[float]] = []
+        vectors: list[list[float]] = []
         embs = getattr(result, "embeddings", None)
         if embs is not None and isinstance(embs, (list, tuple)) and len(embs) > 0:
             for e in embs:
-                vals = getattr(e, "values", None) or (e.get("values") if isinstance(e, dict) else None)
+                vals = getattr(e, "values", None) or (
+                    e.get("values") if isinstance(e, dict) else None
+                )
                 if vals is not None:
                     vectors.append(list(vals))
         else:
             emb = getattr(result, "embedding", None)
             if emb is not None:
-                vals = getattr(emb, "values", None) or (emb.get("values") if isinstance(emb, dict) else None)
+                vals = getattr(emb, "values", None) or (
+                    emb.get("values") if isinstance(emb, dict) else None
+                )
                 if vals is not None:
                     vectors.append(list(vals))
             elif hasattr(result, "values") and isinstance(result.values, (list, tuple)):
                 vectors.append(list(result.values))
-            elif isinstance(result, dict) and "values" in result and isinstance(result["values"], (list, tuple)):
+            elif (
+                isinstance(result, dict)
+                and "values" in result
+                and isinstance(result["values"], (list, tuple))
+            ):
                 vectors.append(list(result["values"]))
         return vectors
 
-    def call(self, api_kwargs: Dict = {}, model_type: ModelType = ModelType.UNDEFINED):
+    def call(self, api_kwargs: dict = {}, model_type: ModelType = ModelType.UNDEFINED):
         """Generates embeddings for input texts with Redis caching and batching."""
         try:
             if model_type == ModelType.EMBEDDER:
                 redis_mgr = RedisCacheManager.get_instance()
 
-                model = api_kwargs.get("model") or self.model_name or "gemini-embedding-2"
+                model = (
+                    api_kwargs.get("model") or self.model_name or "gemini-embedding-2"
+                )
                 task_type = api_kwargs.get("task_type", "RETRIEVAL_DOCUMENT")
                 input_texts = api_kwargs.get("input", [])
 
@@ -295,8 +324,8 @@ class GeminiEmbedderClient(ModelClient):
                     return []
 
                 total = len(input_texts)
-                cached_vectors: Dict[int, List[float]] = {}
-                uncached_items: List[Tuple[int, str]] = []
+                cached_vectors: dict[int, list[float]] = {}
+                uncached_items: list[tuple[int, str]] = []
 
                 # Step 1: Query Redis Embedding Cache
                 for idx, text in enumerate(input_texts):
@@ -308,7 +337,9 @@ class GeminiEmbedderClient(ModelClient):
 
                 # Step 2: Batch embed any uncached texts with intra-batch deduplication
                 if uncached_items:
-                    unique_texts = list(dict.fromkeys([item[1] for item in uncached_items]))
+                    unique_texts = list(
+                        dict.fromkeys([item[1] for item in uncached_items])
+                    )
                     total_unique = len(unique_texts)
                     batch_size = self.max_batch_size
                     printc(
@@ -316,7 +347,7 @@ class GeminiEmbedderClient(ModelClient):
                         f"Embedding {total_unique} unique texts ({len(uncached_items)} total uncached) in batches of {batch_size} (primary: {model})...",
                         color="blue",
                     )
-                    text_to_vec: Dict[str, List[float]] = {}
+                    text_to_vec: dict[str, list[float]] = {}
                     for i in range(0, total_unique, batch_size):
                         batch_texts = unique_texts[i : i + batch_size]
                         res = self._embed_batch_with_retry_and_fallback(
@@ -344,7 +375,9 @@ class GeminiEmbedderClient(ModelClient):
                     )
 
                 # Return structured objects preserving input ordering
-                ordered_responses = [{"values": cached_vectors.get(i, [])} for i in range(total)]
+                ordered_responses = [
+                    {"values": cached_vectors.get(i, [])} for i in range(total)
+                ]
                 return ordered_responses
             else:
                 raise ValueError(
@@ -356,7 +389,7 @@ class GeminiEmbedderClient(ModelClient):
             log.error(f"GeminiEmbedder: Error during call execution: {e}")
             raise
 
-    def to_dict(self, exclude: Optional[List[str]] = None) -> Dict[str, Any]:
+    def to_dict(self, exclude: list[str] | None = None) -> dict[str, Any]:
         try:
             exclude_list = list(exclude) if exclude is not None else []
             if "_sync_client" not in exclude_list:

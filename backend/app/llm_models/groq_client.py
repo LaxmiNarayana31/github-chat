@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Iterator, Sequence
 from types import SimpleNamespace
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Self, TypeVar
 
 from adalflow.core.model_client import ModelClient
 from adalflow.core.types import CompletionUsage, GeneratorOutput, ModelType
@@ -16,7 +17,7 @@ T = TypeVar("T")
 log = logging.getLogger(__name__)
 
 # Fallback sequence of active, supported models across Gemini and Groq
-DEFAULT_GENERATION_MODELS: List[Dict[str, str]] = [
+DEFAULT_GENERATION_MODELS: list[dict[str, str]] = [
     {"provider": "gemini", "model": "gemini-2.5-flash"},
     {"provider": "groq", "model": "llama-3.3-70b-versatile"},
     {"provider": "gemini", "model": "gemini-2.0-flash"},
@@ -59,26 +60,28 @@ class MultiProviderLLMClient(ModelClient):
 
     def __init__(
         self,
-        gemini_api_key: Optional[str] = None,
-        groq_api_key: Optional[str] = None,
-        models: Optional[List[Dict[str, str]]] = None,
-        api_key: Optional[str] = None,  # Legacy alias for groq_api_key
+        gemini_api_key: str | None = None,
+        groq_api_key: str | None = None,
+        models: list[dict[str, str]] | None = None,
+        api_key: str | None = None,  # Legacy alias for groq_api_key
     ):
         super().__init__()
         self._gemini_api_key = gemini_api_key
         self._groq_api_key = groq_api_key or api_key
-        self.models = list(models) if models is not None else list(DEFAULT_GENERATION_MODELS)
-        self._groq_sync: Optional[Groq] = None
-        self._groq_async: Optional[AsyncGroq] = None
-        self._gemini_sync: Optional[genai.Client] = None
+        self.models = (
+            list(models) if models is not None else list(DEFAULT_GENERATION_MODELS)
+        )
+        self._groq_sync: Groq | None = None
+        self._groq_async: AsyncGroq | None = None
+        self._gemini_sync: genai.Client | None = None
         self._sync_client: Any = None
 
     @property
-    def gemini_api_key(self) -> Optional[str]:
+    def gemini_api_key(self) -> str | None:
         return self._gemini_api_key or os.getenv("GEMINI_API_KEY")
 
     @property
-    def groq_api_key(self) -> Optional[str]:
+    def groq_api_key(self) -> str | None:
         return self._groq_api_key or os.getenv("GROQ_API_KEY")
 
     @property
@@ -100,7 +103,11 @@ class MultiProviderLLMClient(ModelClient):
     def init_sync_client(self) -> Any:
         if self._sync_client is not None:
             return self._sync_client
-        return self.groq_client if self.groq_api_key else (self.gemini_client if self.gemini_api_key else None)
+        return (
+            self.groq_client
+            if self.groq_api_key
+            else (self.gemini_client if self.gemini_api_key else None)
+        )
 
     @property
     def sync_client(self) -> Any:
@@ -110,21 +117,21 @@ class MultiProviderLLMClient(ModelClient):
     def sync_client(self, value: Any):
         self._sync_client = value
 
-    def init_async_client(self) -> Optional[AsyncGroq]:
+    def init_async_client(self) -> AsyncGroq | None:
         if self._groq_async is None and self.groq_api_key:
             self._groq_async = AsyncGroq(api_key=self.groq_api_key)
         return self._groq_async
 
-    def _parse_template_to_messages(self, input_text: str) -> Sequence[Dict[str, str]]:
+    def _parse_template_to_messages(self, input_text: str) -> Sequence[dict[str, str]]:
         """Parse template with <SYS> and <USER> tags into OpenAI/Gemini compatible messages."""
-        messages: List[Dict[str, str]] = []
+        messages: list[dict[str, str]] = []
 
-        sys_match = re.search(r'<SYS>(.*?)</SYS>', input_text, re.DOTALL)
+        sys_match = re.search(r"<SYS>(.*?)</SYS>", input_text, re.DOTALL)
         if sys_match:
             system_content = sys_match.group(1).strip()
             messages.append({"role": "system", "content": system_content})
 
-        middle_match = re.search(r'</SYS>(.*?)<USER>', input_text, re.DOTALL)
+        middle_match = re.search(r"</SYS>(.*?)<USER>", input_text, re.DOTALL)
         if middle_match:
             middle_content = middle_match.group(1).strip()
             if middle_content:
@@ -133,7 +140,7 @@ class MultiProviderLLMClient(ModelClient):
                 else:
                     messages.append({"role": "system", "content": middle_content})
 
-        user_match = re.search(r'<USER>(.*?)</USER>', input_text, re.DOTALL)
+        user_match = re.search(r"<USER>(.*?)</USER>", input_text, re.DOTALL)
         if user_match:
             user_content = user_match.group(1).strip()
             messages.append({"role": "user", "content": user_content})
@@ -141,20 +148,25 @@ class MultiProviderLLMClient(ModelClient):
             if not messages:
                 messages.append({"role": "user", "content": input_text})
             else:
-                messages.append({"role": "user", "content": "Please respond based on the above context."})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "Please respond based on the above context.",
+                    }
+                )
 
         return messages
 
     def _format_gemini_contents(
-        self, messages: Sequence[Dict[str, str]], model: str = ""
-    ) -> Tuple[Optional[str], List[types.Content]]:
+        self, messages: Sequence[dict[str, str]], model: str = ""
+    ) -> tuple[str | None, list[types.Content]]:
         """
         Format generic messages into Google Gemini system_instruction and Content objects.
         For Gemma models (gemma-4-31b-it, gemma-4-26b-a4b-it), merges system instruction into
         the user prompt because Gemma does not support separate system_instruction in config.
         """
-        system_instruction: Optional[str] = None
-        contents: List[types.Content] = []
+        system_instruction: str | None = None
+        contents: list[types.Content] = []
 
         for msg in messages:
             role = msg.get("role", "user")
@@ -166,16 +178,22 @@ class MultiProviderLLMClient(ModelClient):
                     system_instruction += "\n\n" + content
             elif role in ("assistant", "model"):
                 contents.append(
-                    types.Content.model_validate({"role": "model", "parts": [{"text": content}]})
+                    types.Content.model_validate(
+                        {"role": "model", "parts": [{"text": content}]}
+                    )
                 )
             else:
                 contents.append(
-                    types.Content.model_validate({"role": "user", "parts": [{"text": content}]})
+                    types.Content.model_validate(
+                        {"role": "user", "parts": [{"text": content}]}
+                    )
                 )
 
         if not contents:
             contents.append(
-                types.Content.model_validate({"role": "user", "parts": [{"text": "Please respond."}]})
+                types.Content.model_validate(
+                    {"role": "user", "parts": [{"text": "Please respond."}]}
+                )
             )
 
         # Handle Gemma models: merge system instructions directly into first user message
@@ -183,17 +201,21 @@ class MultiProviderLLMClient(ModelClient):
         if is_gemma and system_instruction:
             if contents and contents[0].role == "user" and contents[0].parts:
                 orig_text = contents[0].parts[0].text or ""
-                contents[0] = types.Content.model_validate({
-                    "role": "user",
-                    "parts": [{"text": f"{system_instruction}\n\n{orig_text}"}],
-                })
+                contents[0] = types.Content.model_validate(
+                    {
+                        "role": "user",
+                        "parts": [{"text": f"{system_instruction}\n\n{orig_text}"}],
+                    }
+                )
             else:
                 contents.insert(
                     0,
-                    types.Content.model_validate({
-                        "role": "user",
-                        "parts": [{"text": system_instruction}],
-                    }),
+                    types.Content.model_validate(
+                        {
+                            "role": "user",
+                            "parts": [{"text": system_instruction}],
+                        }
+                    ),
                 )
             system_instruction = None
 
@@ -202,7 +224,7 @@ class MultiProviderLLMClient(ModelClient):
     def _call_gemini(
         self,
         model: str,
-        messages: Sequence[Dict[str, str]],
+        messages: Sequence[dict[str, str]],
         temperature: float = 0.3,
         **kwargs,
     ) -> UnifiedChatCompletion:
@@ -210,15 +232,19 @@ class MultiProviderLLMClient(ModelClient):
         if not self.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not configured.")
 
-        system_instruction, contents = self._format_gemini_contents(messages, model=model)
+        system_instruction, contents = self._format_gemini_contents(
+            messages, model=model
+        )
         contents_input: Any = contents
-        config_kwargs: Dict[str, Any] = {}
+        config_kwargs: dict[str, Any] = {}
         if system_instruction:
             config_kwargs["system_instruction"] = system_instruction
         if temperature is not None:
             config_kwargs["temperature"] = float(temperature)
 
-        config_obj = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        config_obj = (
+            types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        )
 
         # Execute call with fallback for models/ prefix if 404
         try:
@@ -228,8 +254,12 @@ class MultiProviderLLMClient(ModelClient):
                 config=config_obj,
             )
         except Exception as e:
-            if ("404" in str(e) or "not found" in str(e).lower()) and not model.startswith("models/"):
-                log.info(f"Gemini model {model} returned 404, retrying with models/{model}...")
+            if (
+                "404" in str(e) or "not found" in str(e).lower()
+            ) and not model.startswith("models/"):
+                log.info(
+                    f"Gemini model {model} returned 404, retrying with models/{model}..."
+                )
                 response = self.gemini_client.models.generate_content(
                     model=f"models/{model}",
                     contents=contents_input,
@@ -242,7 +272,9 @@ class MultiProviderLLMClient(ModelClient):
         usage_meta = getattr(response, "usage_metadata", None)
         prompt_tokens = getattr(usage_meta, "prompt_token_count", 0) or 0
         completion_tokens = getattr(usage_meta, "candidates_token_count", 0) or 0
-        total_tokens = getattr(usage_meta, "total_token_count", 0) or (prompt_tokens + completion_tokens)
+        total_tokens = getattr(usage_meta, "total_token_count", 0) or (
+            prompt_tokens + completion_tokens
+        )
 
         return UnifiedChatCompletion(
             content=text,
@@ -257,7 +289,7 @@ class MultiProviderLLMClient(ModelClient):
     def _call_groq(
         self,
         model: str,
-        messages: Sequence[Dict[str, str]],
+        messages: Sequence[dict[str, str]],
         temperature: float = 0.3,
         **kwargs,
     ) -> UnifiedChatCompletion:
@@ -272,7 +304,7 @@ class MultiProviderLLMClient(ModelClient):
                 role = "user"
             groq_messages.append({"role": role, "content": m.get("content", "")})
 
-        call_kwargs: Dict[str, Any] = {
+        call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": groq_messages,
             "temperature": float(temperature) if temperature is not None else 0.3,
@@ -285,7 +317,9 @@ class MultiProviderLLMClient(ModelClient):
         except Exception as e:
             err_str = str(e).lower()
             # If the model does not accept system messages, merge system into first user message
-            if "system" in err_str and any(x in err_str for x in ["not supported", "role", "invalid"]):
+            if "system" in err_str and any(
+                x in err_str for x in ["not supported", "role", "invalid"]
+            ):
                 merged_messages = []
                 system_text = ""
                 for m in groq_messages:
@@ -294,7 +328,9 @@ class MultiProviderLLMClient(ModelClient):
                     else:
                         merged_messages.append(dict(m))
                 if merged_messages and system_text:
-                    merged_messages[0]["content"] = f"{system_text}\n\n{merged_messages[0]['content']}"
+                    merged_messages[0]["content"] = (
+                        f"{system_text}\n\n{merged_messages[0]['content']}"
+                    )
                 elif system_text:
                     merged_messages.append({"role": "user", "content": system_text})
                 call_kwargs["messages"] = merged_messages
@@ -309,7 +345,9 @@ class MultiProviderLLMClient(ModelClient):
         usage = getattr(completion, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
         completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-        total_tokens = getattr(usage, "total_tokens", 0) or (prompt_tokens + completion_tokens)
+        total_tokens = getattr(usage, "total_tokens", 0) or (
+            prompt_tokens + completion_tokens
+        )
 
         return UnifiedChatCompletion(
             content=content,
@@ -323,10 +361,10 @@ class MultiProviderLLMClient(ModelClient):
 
     def convert_inputs_to_api_kwargs(
         self,
-        input: Optional[Any] = None,
-        model_kwargs: Dict = {},
+        input: Any | None = None,
+        model_kwargs: dict = {},
         model_type: ModelType = ModelType.UNDEFINED,
-    ) -> Dict:
+    ) -> dict:
         final_model_kwargs = model_kwargs.copy()
         if model_type == ModelType.LLM:
             if input is not None and input != "":
@@ -335,16 +373,20 @@ class MultiProviderLLMClient(ModelClient):
                 messages = [{"role": "user", "content": "Hello"}]
             final_model_kwargs["messages"] = messages
         else:
-            raise ValueError(f"model_type {model_type} is not supported. This client only supports LLM.")
+            raise ValueError(
+                f"model_type {model_type} is not supported. This client only supports LLM."
+            )
         return final_model_kwargs
 
-    def call(self, api_kwargs: Dict = {}, model_type: ModelType = ModelType.UNDEFINED):
+    def call(self, api_kwargs: dict = {}, model_type: ModelType = ModelType.UNDEFINED):
         """
         Execute generation by cycling through configured models across Gemini and Groq.
         If any model encounters an error or rate limit, it falls back to the next model.
         """
         if model_type != ModelType.LLM:
-            raise ValueError(f"model_type {model_type} is not supported. Only LLM is supported.")
+            raise ValueError(
+                f"model_type {model_type} is not supported. Only LLM is supported."
+            )
 
         messages = api_kwargs.get("messages")
         if not messages:
@@ -368,8 +410,17 @@ class MultiProviderLLMClient(ModelClient):
                 candidate_entries.remove(specific_entry)
                 candidate_entries.insert(0, specific_entry)
             else:
-                prov = "gemini" if ("gemini" in requested_model.lower() or "gemma" in requested_model.lower()) else "groq"
-                candidate_entries.insert(0, {"provider": prov, "model": requested_model})
+                prov = (
+                    "gemini"
+                    if (
+                        "gemini" in requested_model.lower()
+                        or "gemma" in requested_model.lower()
+                    )
+                    else "groq"
+                )
+                candidate_entries.insert(
+                    0, {"provider": prov, "model": requested_model}
+                )
 
         errors = []
         for idx, entry in enumerate(candidate_entries):
@@ -378,7 +429,9 @@ class MultiProviderLLMClient(ModelClient):
 
             # Verify credentials exist for the provider
             if provider == "gemini" and not self.gemini_api_key:
-                errors.append(f"gemini:{model} -> GEMINI_API_KEY not configured, skipping")
+                errors.append(
+                    f"gemini:{model} -> GEMINI_API_KEY not configured, skipping"
+                )
                 continue
             if provider == "groq" and not self.groq_api_key:
                 errors.append(f"groq:{model} -> GROQ_API_KEY not configured, skipping")
@@ -390,9 +443,13 @@ class MultiProviderLLMClient(ModelClient):
             )
             try:
                 if provider == "gemini":
-                    completion = self._call_gemini(model=model, messages=messages, temperature=temperature)
+                    completion = self._call_gemini(
+                        model=model, messages=messages, temperature=temperature
+                    )
                 elif provider == "groq":
-                    completion = self._call_groq(model=model, messages=messages, temperature=temperature)
+                    completion = self._call_groq(
+                        model=model, messages=messages, temperature=temperature
+                    )
                 else:
                     log.warning(f"Unknown provider '{provider}', skipping...")
                     continue
@@ -411,28 +468,34 @@ class MultiProviderLLMClient(ModelClient):
                 )
 
         error_summary = "\n".join(f"  - {err}" for err in errors)
-        log.error(f"MultiProviderLLMClient: All models in fallback chain failed:\n{error_summary}")
+        log.error(
+            f"MultiProviderLLMClient: All models in fallback chain failed:\n{error_summary}"
+        )
         raise RuntimeError(f"All models in fallback chain failed:\n{error_summary}")
 
     def _stream_gemini(
         self,
         model: str,
-        messages: Sequence[Dict[str, str]],
+        messages: Sequence[dict[str, str]],
         temperature: float = 0.3,
     ) -> Iterator[str]:
         """Stream chunks from Google Gemini generate_content_stream API."""
         if not self.gemini_api_key:
             raise ValueError("GEMINI_API_KEY is not configured.")
 
-        system_instruction, contents = self._format_gemini_contents(messages, model=model)
+        system_instruction, contents = self._format_gemini_contents(
+            messages, model=model
+        )
         contents_input: Any = contents
-        config_kwargs: Dict[str, Any] = {}
+        config_kwargs: dict[str, Any] = {}
         if system_instruction:
             config_kwargs["system_instruction"] = system_instruction
         if temperature is not None:
             config_kwargs["temperature"] = float(temperature)
 
-        config_obj = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        config_obj = (
+            types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        )
 
         try:
             response_stream = self.gemini_client.models.generate_content_stream(
@@ -441,7 +504,9 @@ class MultiProviderLLMClient(ModelClient):
                 config=config_obj,
             )
         except Exception as e:
-            if ("404" in str(e) or "not found" in str(e).lower()) and not model.startswith("models/"):
+            if (
+                "404" in str(e) or "not found" in str(e).lower()
+            ) and not model.startswith("models/"):
                 response_stream = self.gemini_client.models.generate_content_stream(
                     model=f"models/{model}",
                     contents=contents_input,
@@ -458,7 +523,7 @@ class MultiProviderLLMClient(ModelClient):
     def _stream_groq(
         self,
         model: str,
-        messages: Sequence[Dict[str, str]],
+        messages: Sequence[dict[str, str]],
         temperature: float = 0.3,
     ) -> Iterator[str]:
         """Stream chunks from Groq chat.completions.create(stream=True) API."""
@@ -472,7 +537,7 @@ class MultiProviderLLMClient(ModelClient):
                 role = "user"
             groq_messages.append({"role": role, "content": m.get("content", "")})
 
-        call_kwargs: Dict[str, Any] = {
+        call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": groq_messages,
             "temperature": float(temperature) if temperature is not None else 0.3,
@@ -483,7 +548,9 @@ class MultiProviderLLMClient(ModelClient):
             stream = self.groq_client.chat.completions.create(**call_kwargs)
         except Exception as e:
             err_str = str(e).lower()
-            if "system" in err_str and any(x in err_str for x in ["not supported", "role", "invalid"]):
+            if "system" in err_str and any(
+                x in err_str for x in ["not supported", "role", "invalid"]
+            ):
                 merged_messages = []
                 system_text = ""
                 for m in groq_messages:
@@ -492,7 +559,9 @@ class MultiProviderLLMClient(ModelClient):
                     else:
                         merged_messages.append(dict(m))
                 if merged_messages and system_text:
-                    merged_messages[0]["content"] = f"{system_text}\n\n{merged_messages[0]['content']}"
+                    merged_messages[0]["content"] = (
+                        f"{system_text}\n\n{merged_messages[0]['content']}"
+                    )
                 elif system_text:
                     merged_messages.append({"role": "user", "content": system_text})
                 call_kwargs["messages"] = merged_messages
@@ -501,14 +570,22 @@ class MultiProviderLLMClient(ModelClient):
                 raise e
 
         for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            if (
+                chunk.choices
+                and chunk.choices[0].delta
+                and chunk.choices[0].delta.content
+            ):
                 yield chunk.choices[0].delta.content
 
-    def stream_call(self, api_kwargs: Dict = {}) -> Iterator[str]:
+    def stream_call(self, api_kwargs: dict = {}) -> Iterator[str]:
         """Stream generated text chunks using the multi-provider fallback chain."""
-        messages = api_kwargs.get("messages") or api_kwargs.get("model_kwargs", {}).get("messages")
+        messages = api_kwargs.get("messages") or api_kwargs.get("model_kwargs", {}).get(
+            "messages"
+        )
         if not messages:
-            input_text = api_kwargs.get("input") or api_kwargs.get("model_kwargs", {}).get("input")
+            input_text = api_kwargs.get("input") or api_kwargs.get(
+                "model_kwargs", {}
+            ).get("input")
             if input_text:
                 messages = [{"role": "user", "content": str(input_text)}]
             else:
@@ -529,13 +606,20 @@ class MultiProviderLLMClient(ModelClient):
                 errors.append(f"groq:{model} -> GROQ_API_KEY not configured")
                 continue
 
-            printc(f"MultiProviderLLMClient: Streaming with {provider}:{model}...", color="blue")
+            printc(
+                f"MultiProviderLLMClient: Streaming with {provider}:{model}...",
+                color="blue",
+            )
             try:
                 if provider == "gemini":
-                    yield from self._stream_gemini(model=model, messages=messages, temperature=temperature)
+                    yield from self._stream_gemini(
+                        model=model, messages=messages, temperature=temperature
+                    )
                     return
                 elif provider == "groq":
-                    yield from self._stream_groq(model=model, messages=messages, temperature=temperature)
+                    yield from self._stream_groq(
+                        model=model, messages=messages, temperature=temperature
+                    )
                     return
             except Exception as e:
                 err_msg = f"{provider}:{model} -> {e}"
@@ -545,7 +629,10 @@ class MultiProviderLLMClient(ModelClient):
                     color="yellow",
                 )
 
-        printc("MultiProviderLLMClient: All streaming attempts failed, falling back to sync call...", color="yellow")
+        printc(
+            "MultiProviderLLMClient: All streaming attempts failed, falling back to sync call...",
+            color="yellow",
+        )
         comp = self.call(api_kwargs)
         if hasattr(comp, "choices") and comp.choices:
             yield comp.choices[0].message.content or ""
@@ -554,7 +641,9 @@ class MultiProviderLLMClient(ModelClient):
         else:
             yield str(comp)
 
-    async def acall(self, api_kwargs: Dict = {}, model_type: ModelType = ModelType.UNDEFINED) -> Any:  # type: ignore[override]
+    async def acall(
+        self, api_kwargs: dict = {}, model_type: ModelType = ModelType.UNDEFINED
+    ) -> Any:  # type: ignore[override]
         """Async fallback generation."""
         try:
             try:
@@ -583,7 +672,9 @@ class MultiProviderLLMClient(ModelClient):
             return GeneratorOutput(data=None, usage=usage, raw_response=data)
         except Exception as e:
             log.error(f"Error parsing completion: {e}")
-            return GeneratorOutput(data=str(e), usage=None, raw_response=str(completion))
+            return GeneratorOutput(
+                data=str(e), usage=None, raw_response=str(completion)
+            )
 
     def track_completion_usage(self, completion: Any) -> CompletionUsage:
         try:
@@ -610,7 +701,7 @@ class MultiProviderLLMClient(ModelClient):
             return CompletionUsage(completion_tokens=0, prompt_tokens=0, total_tokens=0)
 
     @classmethod
-    def from_dict(cls: type[T], data: Dict[str, Any]) -> T:
+    def from_dict(cls, data: dict[str, Any]) -> Self:
         try:
             obj = super().from_dict(data)
             return obj
@@ -618,7 +709,7 @@ class MultiProviderLLMClient(ModelClient):
             log.error(f"MultiProviderLLMClient: Error in from_dict: {e}")
             raise
 
-    def to_dict(self, exclude: Optional[List[str]] = None) -> Dict[str, Any]:
+    def to_dict(self, exclude: list[str] | None = None) -> dict[str, Any]:
         try:
             exclude_list = list(exclude) if exclude is not None else []
             for key in ["_groq_sync", "_groq_async", "_gemini_sync", "_sync_client"]:
@@ -634,7 +725,9 @@ class MultiProviderLLMClient(ModelClient):
         try:
             return self.groq_client.models.list()
         except Exception as e:
-            log.warning(f"Failed to query remote models, returning configured defaults: {e}")
+            log.warning(
+                f"Failed to query remote models, returning configured defaults: {e}"
+            )
             return self.models
 
 
@@ -642,8 +735,8 @@ class MultiProviderLLMClient(ModelClient):
 CustomGroqClient = MultiProviderLLMClient
 
 __all__ = [
-    "MultiProviderLLMClient",
-    "CustomGroqClient",
-    "UnifiedChatCompletion",
     "DEFAULT_GENERATION_MODELS",
+    "CustomGroqClient",
+    "MultiProviderLLMClient",
+    "UnifiedChatCompletion",
 ]
