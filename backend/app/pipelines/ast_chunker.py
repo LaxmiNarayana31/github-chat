@@ -3,16 +3,20 @@
 import ast
 import logging
 import re
-from typing import Any, List, Optional
+from typing import Any
 
+import tree_sitter_languages
 from adalflow.core.types import Document as AdalDocument
 
-try:
-    import tree_sitter_languages
-except ImportError:
-    tree_sitter_languages = None
-
 log = logging.getLogger(__name__)
+
+
+def _create_document(
+    text: str, meta_data: dict[str, Any] | None = None
+) -> AdalDocument:
+    """Instantiate AdalDocument with explicit parameter typing to satisfy static type checkers."""
+    doc_factory: Any = AdalDocument
+    return doc_factory(text=text, meta_data=meta_data)
 
 
 class ASTChunker:
@@ -27,7 +31,7 @@ class ASTChunker:
         content: str,
         file_path: str,
         file_type: str,
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Chunk a file into semantic units based on language structure."""
         if not content or not content.strip():
             return []
@@ -46,20 +50,22 @@ class ASTChunker:
         # Fallback to multi-language structural regex chunker
         return self._chunk_structural_code(content, file_path, ext)
 
-    def _chunk_python(self, content: str, file_path: str) -> List[AdalDocument]:
+    def _chunk_python(self, content: str, file_path: str) -> list[AdalDocument]:
         """Parse Python source into AST nodes (classes, functions, methods) with precise line numbers."""
         try:
             tree = ast.parse(content)
         except SyntaxError:
-            log.debug(f"AST parse error in {file_path}, falling back to structural chunking.")
+            log.debug(
+                f"AST parse error in {file_path}, falling back to structural chunking."
+            )
             return []
 
         lines = content.splitlines()
-        chunks: List[AdalDocument] = []
+        chunks: list[AdalDocument] = []
 
         # Extract top-level module docstrings and imports as header chunk
-        header_lines: List[str] = []
-        module_imports: List[str] = []
+        header_lines: list[str] = []
+        module_imports: list[str] = []
         for node in tree.body:
             if isinstance(node, (ast.Import, ast.ImportFrom, ast.Expr)):
                 start = getattr(node, "lineno", 1) - 1
@@ -69,8 +75,12 @@ class ASTChunker:
                     module_imports.append(", ".join([a.name for a in node.names]))
                 elif isinstance(node, ast.ImportFrom):
                     mod = node.module or ""
-                    module_imports.append(f"{mod}: " + ", ".join([a.name for a in node.names]))
-            elif not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    module_imports.append(
+                        f"{mod}: " + ", ".join([a.name for a in node.names])
+                    )
+            elif not isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
                 start = getattr(node, "lineno", 1) - 1
                 end = getattr(node, "end_lineno", start + 1)
                 header_lines.extend(lines[start:end])
@@ -80,8 +90,9 @@ class ASTChunker:
         header_text = "\n".join(header_lines).strip()
         if header_text and len(header_text) >= self.min_chunk_chars:
             chunks.append(
-                AdalDocument(
-                    text=f"# [Context: {file_path} | Scope: module_header]\n" + header_text,
+                _create_document(
+                    text=f"# [Context: {file_path} | Scope: module_header]\n"
+                    + header_text,
                     meta_data={
                         "file_path": file_path,
                         "symbol_name": "module_header",
@@ -96,20 +107,28 @@ class ASTChunker:
         # Extract functions and classes
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                chunks.extend(self._extract_function_chunk(node, lines, file_path, imports_summary=imports_summary))
+                chunks.extend(
+                    self._extract_function_chunk(
+                        node, lines, file_path, imports_summary=imports_summary
+                    )
+                )
             elif isinstance(node, ast.ClassDef):
-                chunks.extend(self._extract_class_chunks(node, lines, file_path, imports_summary=imports_summary))
+                chunks.extend(
+                    self._extract_class_chunks(
+                        node, lines, file_path, imports_summary=imports_summary
+                    )
+                )
 
         return chunks
 
     def _extract_function_chunk(
         self,
         node: Any,
-        lines: List[str],
+        lines: list[str],
         file_path: str,
-        parent_class: Optional[str] = None,
+        parent_class: str | None = None,
         imports_summary: str = "",
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Extract a function or method AST node into an AdalDocument chunk with contextual headers."""
         start_line = getattr(node, "lineno", 1)
         end_line = getattr(node, "end_lineno", start_line)
@@ -141,7 +160,7 @@ class ASTChunker:
         contextual_text = f"{header}\n{raw_code}"
 
         return [
-            AdalDocument(
+            _create_document(
                 text=contextual_text,
                 meta_data={
                     "file_path": file_path,
@@ -158,10 +177,10 @@ class ASTChunker:
     def _extract_class_chunks(
         self,
         node: ast.ClassDef,
-        lines: List[str],
+        lines: list[str],
         file_path: str,
         imports_summary: str = "",
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Extract class definition and its internal methods as structured chunks."""
         start_line = getattr(node, "lineno", 1)
         end_line = getattr(node, "end_lineno", start_line)
@@ -174,7 +193,7 @@ class ASTChunker:
             if imports_summary:
                 header += f"\n# Context Imports: {imports_summary}"
             return [
-                AdalDocument(
+                _create_document(
                     text=f"{header}\n{class_text}",
                     meta_data={
                         "file_path": file_path,
@@ -189,8 +208,8 @@ class ASTChunker:
             ]
 
         # For larger classes, extract header followed by each method
-        chunks: List[AdalDocument] = []
-        header_lines: List[str] = []
+        chunks: list[AdalDocument] = []
+        header_lines: list[str] = []
         for item in node.body:
             if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 s = getattr(item, "lineno", 1) - 1
@@ -203,7 +222,7 @@ class ASTChunker:
             if imports_summary:
                 cls_header += f"\n# Context Imports: {imports_summary}"
             chunks.append(
-                AdalDocument(
+                _create_document(
                     text=f"{cls_header}\nclass {node.name}:\n    " + header_text,
                     meta_data={
                         "file_path": file_path,
@@ -235,7 +254,7 @@ class ASTChunker:
         content: str,
         file_path: str,
         ext: str,
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Universal Tree-sitter AST parser for high-precision syntax chunking across enterprise languages."""
         lang_map = {
             ".js": "javascript",
@@ -306,7 +325,7 @@ class ASTChunker:
             "function_definition",
         }
 
-        chunks: List[AdalDocument] = []
+        chunks: list[AdalDocument] = []
 
         def extract_symbol_info(node: Any) -> tuple[str, str]:
             sym_name = ""
@@ -319,7 +338,11 @@ class ASTChunker:
                         sym_name = c.text.decode("utf-8", errors="replace")
                         break
 
-            sym_type = "function" if "function" in node.type or "method" in node.type else "class"
+            sym_type = (
+                "function"
+                if "function" in node.type or "method" in node.type
+                else "class"
+            )
             if "interface" in node.type:
                 sym_type = "interface"
             elif "struct" in node.type:
@@ -364,7 +387,7 @@ class ASTChunker:
                     header += f"\n{comment_char} Context Imports: {imports_summary}"
                 contextual_text = f"{header}\n{raw_text}"
                 chunks.append(
-                    AdalDocument(
+                    _create_document(
                         text=contextual_text,
                         meta_data={
                             "file_path": file_path,
@@ -384,13 +407,15 @@ class ASTChunker:
         content: str,
         file_path: str,
         ext: str,
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Split multi-language code files (C/C++, JS/TS, Go, Rust, Java) respecting declaration boundaries."""
         lines = content.splitlines()
         if not lines:
             return []
 
-        comment_char = "#" if ext in (".py", ".sh", ".bash", ".rb", ".yaml", ".yml") else "//"
+        comment_char = (
+            "#" if ext in (".py", ".sh", ".bash", ".rb", ".yaml", ".yml") else "//"
+        )
 
         # Extract import/include header lines
         import_lines = [
@@ -421,11 +446,15 @@ class ASTChunker:
                 boundaries.append((i, symbol))
 
         if not boundaries:
-            return self._sliding_window_chunks(lines, file_path, comment_char=comment_char)
+            return self._sliding_window_chunks(
+                lines, file_path, comment_char=comment_char
+            )
 
-        chunks: List[AdalDocument] = []
+        chunks: list[AdalDocument] = []
         for idx, (line_idx, symbol) in enumerate(boundaries):
-            next_line_idx = boundaries[idx + 1][0] if idx + 1 < len(boundaries) else len(lines)
+            next_line_idx = (
+                boundaries[idx + 1][0] if idx + 1 < len(boundaries) else len(lines)
+            )
             chunk_slice = lines[line_idx:next_line_idx]
             raw_text = "\n".join(chunk_slice).strip()
 
@@ -452,7 +481,7 @@ class ASTChunker:
                     header += f"\n{comment_char} Context Imports: {imports_summary}"
                 contextual_text = f"{header}\n{raw_text}"
                 chunks.append(
-                    AdalDocument(
+                    _create_document(
                         text=contextual_text,
                         meta_data={
                             "file_path": file_path,
@@ -465,7 +494,9 @@ class ASTChunker:
                     )
                 )
 
-        return chunks or self._sliding_window_chunks(lines, file_path, comment_char=comment_char)
+        return chunks or self._sliding_window_chunks(
+            lines, file_path, comment_char=comment_char
+        )
 
     def _subdivide_large_code(
         self,
@@ -475,9 +506,9 @@ class ASTChunker:
         symbol_type: str,
         start_line: int,
         comment_char: str = "//",
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Subdivide oversized code blocks into bounded chunks with continuous line accounting."""
-        sub_chunks: List[AdalDocument] = []
+        sub_chunks: list[AdalDocument] = []
         lines = text.splitlines()
         step = 40
         for i in range(0, len(lines), step):
@@ -487,8 +518,9 @@ class ASTChunker:
             cur_end = cur_start + len(sub_lines) - 1
             if sub_text:
                 sub_chunks.append(
-                    AdalDocument(
-                        text=f"{comment_char} [Context: {file_path} | Scope: {symbol_name} | Lines: {cur_start}-{cur_end}]\n" + sub_text,
+                    _create_document(
+                        text=f"{comment_char} [Context: {file_path} | Scope: {symbol_name} | Lines: {cur_start}-{cur_end}]\n"
+                        + sub_text,
                         meta_data={
                             "file_path": file_path,
                             "symbol_name": symbol_name,
@@ -503,12 +535,12 @@ class ASTChunker:
 
     def _sliding_window_chunks(
         self,
-        lines: List[str],
+        lines: list[str],
         file_path: str,
         comment_char: str = "//",
-    ) -> List[AdalDocument]:
+    ) -> list[AdalDocument]:
         """Produce overlapping line windows for files lacking clear declaration keywords."""
-        chunks: List[AdalDocument] = []
+        chunks: list[AdalDocument] = []
         window_size = 50
         overlap = 10
         total_lines = len(lines)
@@ -521,7 +553,7 @@ class ASTChunker:
             if raw_text and len(raw_text) >= self.min_chunk_chars:
                 header = f"{comment_char} [Context: {file_path} | Lines: {start}-{end}]"
                 chunks.append(
-                    AdalDocument(
+                    _create_document(
                         text=f"{header}\n{raw_text}",
                         meta_data={
                             "file_path": file_path,
@@ -554,10 +586,14 @@ class ASTChunker:
                     if isinstance(node, ast.ClassDef):
                         lines.append(f"class {node.name}:")
                         for item in node.body:
-                            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            if isinstance(
+                                item, (ast.FunctionDef, ast.AsyncFunctionDef)
+                            ):
                                 doc = ast.get_docstring(item)
                                 doc_line = f'        """{doc}"""\n' if doc else ""
-                                lines.append(f"    def {item.name}(...): ...\n{doc_line}".rstrip())
+                                lines.append(
+                                    f"    def {item.name}(...): ...\n{doc_line}".rstrip()
+                                )
                     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         doc = ast.get_docstring(node)
                         doc_line = f'    """{doc}"""\n' if doc else ""
@@ -578,4 +614,7 @@ class ASTChunker:
             return "\n".join(skeleton_lines)
 
         code_lines = code.splitlines()
-        return "\n".join(code_lines[:10]) + "\n// ... [remaining body folded for context budget]"
+        return (
+            "\n".join(code_lines[:10])
+            + "\n// ... [remaining body folded for context budget]"
+        )
