@@ -1,8 +1,10 @@
 import json
 import logging
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterator, List, Optional, cast
+from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 import adalflow as adal
@@ -14,26 +16,27 @@ from adalflow.core.types import (
     UserQuery,
 )
 from adalflow.core.types import Document as AdalDocument
-from adalflow.utils import printc
-
-from backend.app.rag.agentic_rag import LangGraphAgenticRAG
 from backend.app.config.config import config
 from backend.app.embeddings.qdrant_manager import QdrantManager
+from backend.app.models.repository import Repository
 from backend.app.pipelines.data_pipeline import DatabaseManager
 from backend.app.prompts.system_prompt import RAG_TEMPLATE, SYSTEM_PROMPT
+from backend.app.rag.agentic_rag import LangGraphAgenticRAG
 from backend.app.services.memory_manager import MemoriManager
 from backend.app.utils.repo_utils import (
+    get_git_commit_sha,
     get_repo_slug,
     normalize_repo_url,
     sanitize_collection_slug,
 )
+from backend.config.database import get_db_session
 
 log = logging.getLogger(__name__)
 
 
 # Memory component
 class Memory(adal.DataComponent):
-    def __init__(self, memori_manager: Optional[MemoriManager] = None):
+    def __init__(self, memori_manager: MemoriManager | None = None):
         super().__init__()
         self.current_conversation = Conversation()
         self.memori_manager = memori_manager
@@ -42,15 +45,19 @@ class Memory(adal.DataComponent):
         return self.current_conversation.dialog_turns
 
     def add_dialog_turn(self, uq: str, ar: str):
-        self.current_conversation.append_dialog_turn(DialogTurn(
-            id=str(uuid4()),
-            user_query=UserQuery(query_str=uq),
-            assistant_response=AssistantResponse(response_str=ar)
-        ))
+        self.current_conversation.append_dialog_turn(
+            DialogTurn(
+                id=str(uuid4()),
+                user_query=UserQuery(query_str=uq),
+                assistant_response=AssistantResponse(response_str=ar),
+            )
+        )
         if self.memori_manager:
-            self.memori_manager.capture_dialog_turn(user_query=uq, assistant_response=ar)
+            self.memori_manager.capture_dialog_turn(
+                user_query=uq, assistant_response=ar
+            )
 
-    def get_history_turns(self) -> List[Dict[str, str]]:
+    def get_history_turns(self) -> list[dict[str, str]]:
         """Return conversation dialog turns as a list of dicts [{'user': ..., 'assistant': ...}]."""
         turns = []
         dialog_items = (
@@ -60,27 +67,32 @@ class Memory(adal.DataComponent):
         )
         for dt in dialog_items:
             uq = getattr(getattr(dt, "user_query", None), "query_str", "") or ""
-            ar = getattr(getattr(dt, "assistant_response", None), "response_str", "") or ""
+            ar = (
+                getattr(getattr(dt, "assistant_response", None), "response_str", "")
+                or ""
+            )
             if uq or ar:
                 turns.append({"user": uq, "assistant": ar})
         return turns
 
-
-    def load_from_memori(self, session_id: Optional[str] = None):
+    def load_from_memori(self, session_id: str | None = None):
         """Restore conversation dialog turns from Memori SQL storage."""
         if not self.memori_manager:
             return
         turns = self.memori_manager.get_conversation_turns(session_id=session_id)
         self.current_conversation.dialog_turns.clear()
         for uq, ar in turns:
-            self.current_conversation.append_dialog_turn(DialogTurn(
-                id=str(uuid4()),
-                user_query=UserQuery(query_str=uq),
-                assistant_response=AssistantResponse(response_str=ar)
-            ))
+            self.current_conversation.append_dialog_turn(
+                DialogTurn(
+                    id=str(uuid4()),
+                    user_query=UserQuery(query_str=uq),
+                    assistant_response=AssistantResponse(response_str=ar),
+                )
+            )
         if turns:
-            printc(f"Memory: Restored {len(turns)} dialog turns from Memori Labs database.", color="green")
-
+            log.info(
+                f"Memory: Restored {len(turns)} dialog turns from Memori Labs database."
+            )
 
 
 @dataclass
@@ -93,40 +105,43 @@ class RAGAnswer(adal.DataClass):
 @dataclass
 class HybridRetrieverOutput:
     """Retriever output envelope compatible with AdalFlow and RAGService."""
-    documents: List[AdalDocument] = field(default_factory=list)
+
+    documents: list[AdalDocument] = field(default_factory=list)
 
 
 # RAG component
 class RAG(adal.Component):
-    def __init__(self, entity_id: Optional[str] = None, process_id: Optional[str] = None):
+    def __init__(self, entity_id: str | None = None, process_id: str | None = None):
         super().__init__()
         self.memori_manager = MemoriManager(entity_id=entity_id, process_id=process_id)
         self.memory = Memory(memori_manager=self.memori_manager)
-        
+
         # Google Gemini Embedder (defaults to gemini-embedding-2)
         self.embedder = adal.Embedder(
             model_client=config["embedder"]["model_client"](),
             model_kwargs=config["embedder"]["model_kwargs"],
         )
-        
+
         # Primary persistent vector database: Qdrant
         self.qdrant_manager = QdrantManager()
         self.db_manager = DatabaseManager()
-        self.transformed_docs: List[AdalDocument] = []
-        self.current_collection: Optional[str] = None
-        self.retriever: Optional[QdrantManager] = None
+        self.transformed_docs: list[AdalDocument] = []
+        self.current_collection: str | None = None
+        self.retriever: QdrantManager | None = None
         self.repo_url: str = ""
 
-        data_parser = adal.DataClassParser(data_class=cast(Any, RAGAnswer), return_data_class=True)
-        
+        data_parser = adal.DataClassParser(
+            data_class=cast(Any, RAGAnswer), return_data_class=True
+        )
+
         # Create generator model client (Groq / Gemini)
         model_client = config["generator"]["model_client"]()
-        
+
         # Register model client with Memori for tracking
         self.memori_manager.register_llm(model_client)
-        
+
         self._configure_message_parser(model_client)
-        
+
         self.generator = adal.Generator(
             template=RAG_TEMPLATE,
             prompt_kwargs={
@@ -151,50 +166,57 @@ class RAG(adal.Component):
             llm_client=model_client,
             memory_component=self.memory,
         )
-    
+
     # Configure the model client to parse template tags into chat messages
     def _configure_message_parser(self, model_client):
         """Configure the model client to parse template tags into chat messages."""
         original_convert = model_client.convert_inputs_to_api_kwargs
-        
-        def patched_convert(input=None, model_kwargs={}, model_type=ModelType.UNDEFINED):
+
+        def patched_convert(
+            input=None, model_kwargs={}, model_type=ModelType.UNDEFINED
+        ):
             final_model_kwargs = model_kwargs.copy()
             if model_type == ModelType.LLM and input:
                 messages = []
-                
+
                 # Extract system message from <SYS>...</SYS>
-                sys_match = re.search(r'<SYS>(.*?)</SYS>', input, re.DOTALL)
+                sys_match = re.search(r"<SYS>(.*?)</SYS>", input, re.DOTALL)
                 if sys_match:
                     system_content = sys_match.group(1).strip()
                     messages.append({"role": "system", "content": system_content})
-                
+
                 # Extract middle content (context, history) between </SYS> and <USER>
-                middle_match = re.search(r'</SYS>(.*?)<USER>', input, re.DOTALL)
+                middle_match = re.search(r"</SYS>(.*?)<USER>", input, re.DOTALL)
                 if middle_match:
                     middle_content = middle_match.group(1).strip()
                     if middle_content and messages:
                         messages[0]["content"] += "\n\n" + middle_content
                     elif middle_content:
                         messages.append({"role": "system", "content": middle_content})
-                
+
                 # Extract user message from <USER>...</USER> - MUST be last
-                user_match = re.search(r'<USER>(.*?)</USER>', input, re.DOTALL)
+                user_match = re.search(r"<USER>(.*?)</USER>", input, re.DOTALL)
                 if user_match:
                     user_content = user_match.group(1).strip()
                     messages.append({"role": "user", "content": user_content})
                 else:
                     # Fallback: add the whole input as user message
                     messages.append({"role": "user", "content": input})
-                
+
                 final_model_kwargs["messages"] = messages
                 return final_model_kwargs
             else:
                 return original_convert(input, model_kwargs, model_type)
-        
+
         model_client.convert_inputs_to_api_kwargs = patched_convert
 
-    def prepare_retriever(self, repo_url_or_path: str, force_reindex: bool = False, token: Optional[str] = None):
-        """Index repository into Qdrant hybrid collection with deduplication and caching."""
+    def prepare_retriever(
+        self,
+        repo_url_or_path: str,
+        force_reindex: bool = False,
+        token: str | None = None,
+    ):
+        """Index repository into Qdrant hybrid collection with git commit hash verification and DB synchronization."""
         normalized_url = normalize_repo_url(repo_url_or_path)
         slug = get_repo_slug(normalized_url)
         collection_name = sanitize_collection_slug(slug)
@@ -202,27 +224,108 @@ class RAG(adal.Component):
         self.repo_url = normalized_url
         expected_dim = config["embedder"].get("dimensions", 768)
 
-        # Check if collection already exists in Qdrant with points
-        if not force_reindex and self.qdrant_manager.collection_exists(collection_name):
-            point_count = self.qdrant_manager.get_collection_point_count(collection_name)
-            if point_count > 0:
-                printc(
-                    f"RAG: Found existing Qdrant collection '{collection_name}' with {point_count} persistent points. "
-                    "Skipping duplicate parsing.",
-                    color="green",
+        # Step 1: Query remote/local Git HEAD commit hash
+        current_commit_sha = get_git_commit_sha(normalized_url, token=token)
+
+        # Step 2: Query PostgreSQL database for previously recorded commit hash
+        db_commit_sha: str | None = None
+        db_is_indexed: bool = False
+        db_chunks: int = 0
+        try:
+            with get_db_session() as session:
+                repo_record: Any = (
+                    session.query(Repository)
+                    .filter(
+                        (Repository.repo_url == normalized_url)
+                        | (Repository.repo_slug == slug)
+                    )
+                    .first()
                 )
+                if repo_record is not None:
+                    raw_sha = getattr(repo_record, "commit_sha", None)
+                    db_commit_sha = str(raw_sha) if raw_sha else None
+                    db_is_indexed = bool(getattr(repo_record, "is_indexed", False))
+                    raw_chunks = getattr(repo_record, "total_chunks", 0)
+                    db_chunks = int(raw_chunks) if raw_chunks else 0
+        except Exception as db_err:
+            log.warning(f"RAG: Database check warning: {db_err}")
+
+        # Step 3: Check if repository is already vectorized at the same commit
+        is_new_commit = bool(
+            db_commit_sha and current_commit_sha and db_commit_sha != current_commit_sha
+        )
+        effective_force_reindex = force_reindex or is_new_commit
+
+        if not effective_force_reindex and self.qdrant_manager.collection_exists(
+            collection_name
+        ):
+            point_count = self.qdrant_manager.get_collection_point_count(
+                collection_name
+            )
+            if point_count > 0:
+                active_commit_label = (
+                    current_commit_sha or db_commit_sha or "existing"
+                )[:8]
+                log.info(
+                    f"RAG: Found existing Qdrant collection '{collection_name}' with {point_count} persistent points "
+                    f"(commit: {active_commit_label}, DB chunks: {db_chunks}). Skipping duplicate clone and vectorization."
+                )
+                # If DB record was missing or untracked, record it now
+                if not db_commit_sha and current_commit_sha:
+                    try:
+                        with get_db_session() as session:
+                            repo: Any = (
+                                session.query(Repository)
+                                .filter(
+                                    (Repository.repo_url == normalized_url)
+                                    | (Repository.repo_slug == slug)
+                                )
+                                .first()
+                            )
+                            now_utc = datetime.now(UTC)
+                            if not repo:
+                                repo = Repository(
+                                    repo_url=normalized_url,
+                                    repo_slug=slug,
+                                    collection_name=collection_name,
+                                    commit_sha=current_commit_sha,
+                                    is_indexed=True,
+                                    total_chunks=point_count,
+                                    created_at=now_utc,
+                                    updated_at=now_utc,
+                                )
+                                session.add(repo)
+                            else:
+                                repo.commit_sha = current_commit_sha
+                                repo.is_indexed = True
+                                repo.total_chunks = point_count
+                                repo.updated_at = now_utc
+                            session.commit()
+                    except Exception as db_sync_err:
+                        log.debug(f"RAG: Non-critical DB sync notice: {db_sync_err}")
+
                 self.retriever = self.qdrant_manager
                 return
 
-        # Prepare and embed repository documents using data pipeline
-        printc(f"RAG: Preparing repository code documents for '{normalized_url}' (slug: {slug})...", color="blue")
+        if is_new_commit:
+            old_sha_short = (db_commit_sha or "")[:8]
+            new_sha_short = (current_commit_sha or "")[:8]
+            log.info(
+                f"RAG: Detected new remote commit for '{normalized_url}' (old: {old_sha_short}, new: {new_sha_short}). "
+                "Triggering fresh clone and re-vectorization."
+            )
+
+        # Step 4: Prepare and embed repository documents using data pipeline
+        log.info(
+            f"RAG: Preparing repository code documents for '{normalized_url}' (slug: {slug})..."
+        )
         self.transformed_docs = self.db_manager.prepare_database(
-            normalized_url, force_reindex=force_reindex, token=token
+            normalized_url, force_reindex=effective_force_reindex, token=token
         )
 
-
         valid_docs = [
-            doc for doc in (self.transformed_docs or [])
+            doc
+            for doc in (self.transformed_docs or [])
             if hasattr(doc, "vector") and doc.vector and len(doc.vector) == expected_dim
         ]
 
@@ -233,29 +336,79 @@ class RAG(adal.Component):
             )
 
         self.transformed_docs = valid_docs
-        printc(
-            f"RAG: Ingesting {len(self.transformed_docs)} documents into Qdrant hybrid collection '{collection_name}'...",
-            color="blue",
+        log.info(
+            f"RAG: Ingesting {len(self.transformed_docs)} documents into Qdrant hybrid collection '{collection_name}'..."
         )
 
         self.qdrant_manager.index_documents(
             collection_name=collection_name,
             documents=self.transformed_docs,
             dense_dimension=expected_dim,
-            force_reindex=force_reindex,
+            force_reindex=effective_force_reindex,
         )
+
+        # Step 5: Resolve commit hash from local clone if remote check didn't resolve it earlier
+        if (
+            not current_commit_sha
+            and hasattr(self.db_manager, "repo_paths")
+            and self.db_manager.repo_paths
+        ):
+            save_dir = self.db_manager.repo_paths.get("save_repo_dir")
+            if save_dir:
+                current_commit_sha = get_git_commit_sha(save_dir)
+
+        # Step 6: Persist/Update repository record securely in PostgreSQL
+        try:
+            with get_db_session() as session:
+                repo: Any = (
+                    session.query(Repository)
+                    .filter(
+                        (Repository.repo_url == normalized_url)
+                        | (Repository.repo_slug == slug)
+                    )
+                    .first()
+                )
+                now_utc = datetime.now(UTC)
+                if not repo:
+                    repo = Repository(
+                        repo_url=normalized_url,
+                        repo_slug=slug,
+                        collection_name=collection_name,
+                        commit_sha=current_commit_sha,
+                        is_indexed=True,
+                        total_chunks=len(self.transformed_docs),
+                        created_at=now_utc,
+                        updated_at=now_utc,
+                    )
+                    session.add(repo)
+                else:
+                    repo.commit_sha = current_commit_sha
+                    repo.collection_name = collection_name
+                    repo.is_indexed = True
+                    repo.total_chunks = len(self.transformed_docs)
+                    repo.updated_at = now_utc
+                session.commit()
+                commit_label = (current_commit_sha or "unknown")[:8]
+                log.info(
+                    f"RAG: Persisted repository '{normalized_url}' in database (commit: {commit_label}, chunks: {len(self.transformed_docs)})."
+                )
+        except Exception as db_save_err:
+            log.warning(
+                f"RAG: Could not persist Repository record in database: {db_save_err}"
+            )
 
         self.retriever = self.qdrant_manager
-        printc(
-            f"RAG: Qdrant Hybrid Retriever initialized successfully with collection '{collection_name}'.",
-            color="green",
+        log.info(
+            f"RAG: Qdrant Hybrid Retriever initialized successfully with collection '{collection_name}'."
         )
 
-    def stream_call(self, query: str) -> Iterator[Dict[str, Any]]:
+    def stream_call(self, query: str) -> Iterator[dict[str, Any]]:
         """Execute stream query via LangGraph Agentic RAG engine."""
-        printc(f"Agentic RAG (Streaming): Processing query: '{query}'", color="green")
+        log.info(f"Agentic RAG (Streaming): Processing query: '{query}'")
         if self.retriever is None or not self.current_collection:
-            raise RuntimeError("Retriever has not been initialized. Please load a repository first.")
+            raise RuntimeError(
+                "Retriever has not been initialized. Please load a repository first."
+            )
 
         repo_summary = None
         if self.transformed_docs:
@@ -266,11 +419,15 @@ class RAG(adal.Component):
             ]
             repo_summary = "\n".join(file_paths[:30])
         elif self.current_collection:
-            indexed_files = self.qdrant_manager.get_indexed_files(self.current_collection, limit=60)
+            indexed_files = self.qdrant_manager.get_indexed_files(
+                self.current_collection, limit=60
+            )
             if indexed_files:
                 repo_summary = "\n".join(indexed_files[:40])
 
-        history_turns = self.memory.get_history_turns() if hasattr(self, "memory") else []
+        history_turns = (
+            self.memory.get_history_turns() if hasattr(self, "memory") else []
+        )
         yield from self.agentic_rag.stream_invoke(
             query=query,
             repo_url=getattr(self, "repo_url", ""),
@@ -280,9 +437,11 @@ class RAG(adal.Component):
         )
 
     def call(self, query: str) -> Any:
-        printc(f"Agentic RAG: Processing query: '{query}'", color="green")
+        log.info(f"Agentic RAG: Processing query: '{query}'")
         if self.retriever is None or not self.current_collection:
-            raise RuntimeError("Retriever has not been initialized. Please load a repository first.")
+            raise RuntimeError(
+                "Retriever has not been initialized. Please load a repository first."
+            )
 
         # Autonomous execution via LangGraph Agentic RAG:
         # Route Query -> Qdrant Hybrid Retrieve -> CRAG Grade Docs -> Query Rewrite Loop -> Grounded Generate -> Save Memory
@@ -297,11 +456,15 @@ class RAG(adal.Component):
                     ]
                     repo_summary = "\n".join(file_paths[:30])
                 elif self.current_collection:
-                    indexed_files = self.qdrant_manager.get_indexed_files(self.current_collection, limit=60)
+                    indexed_files = self.qdrant_manager.get_indexed_files(
+                        self.current_collection, limit=60
+                    )
                     if indexed_files:
                         repo_summary = "\n".join(indexed_files[:40])
 
-                history_turns = self.memory.get_history_turns() if hasattr(self, "memory") else []
+                history_turns = (
+                    self.memory.get_history_turns() if hasattr(self, "memory") else []
+                )
                 final_state = self.agentic_rag.invoke(
                     query=query,
                     repo_url=getattr(self, "repo_url", ""),
@@ -310,27 +473,40 @@ class RAG(adal.Component):
                     conversation_history=history_turns,
                 )
 
-
                 retrieved_docs = final_state.get("retrieved_documents") or []
                 ans = final_state.get("answer") or ""
                 rat = final_state.get("rationale") or ""
-                
+
                 final = RAGAnswer(rationale=rat, answer=ans)
                 retriever_output = [HybridRetrieverOutput(documents=retrieved_docs)]
                 return final, retriever_output
             except Exception as e:
-                log.warning(f"LangGraph Agentic RAG execution failed ({e}), falling back to classic pipeline.")
+                log.warning(
+                    f"LangGraph Agentic RAG execution failed ({e}), falling back to classic pipeline."
+                )
 
         expected_dim = config["embedder"].get("dimensions", 768)
 
         # Embed query using GeminiEmbedderClient
-        embed_output = self.embedder(query, model_kwargs={"task_type": "RETRIEVAL_QUERY"})
+        embed_output = self.embedder(
+            query, model_kwargs={"task_type": "RETRIEVAL_QUERY"}
+        )
         if not embed_output or not embed_output.data:
-            return RAGAnswer(rationale="", answer="Failed to generate query embedding. Please check your GEMINI_API_KEY."), []
+            return RAGAnswer(
+                rationale="",
+                answer="Failed to generate query embedding. Please check your GEMINI_API_KEY.",
+            ), []
 
-        vectors = [emb.embedding for emb in embed_output.data if hasattr(emb, "embedding") and emb.embedding]
+        vectors = [
+            emb.embedding
+            for emb in embed_output.data
+            if hasattr(emb, "embedding") and emb.embedding
+        ]
         if not vectors or len(vectors[0]) != expected_dim:
-            return RAGAnswer(rationale="", answer=f"Embedding error: Expected {expected_dim} dimensions for query."), []
+            return RAGAnswer(
+                rationale="",
+                answer=f"Embedding error: Expected {expected_dim} dimensions for query.",
+            ), []
 
         query_dense = vectors[0]
         top_k = config.get("retriever", {}).get("top_k", 4)
@@ -344,9 +520,13 @@ class RAG(adal.Component):
         )
 
         if not retrieved_docs:
-            return RAGAnswer(rationale="", answer="No relevant code context found in repository."), []
+            return RAGAnswer(
+                rationale="", answer="No relevant code context found in repository."
+            ), []
 
-        printc(f"RAG: Qdrant hybrid search retrieved {len(retrieved_docs)} relevant code documents", color="green")
+        log.info(
+            f"RAG: Qdrant hybrid search retrieved {len(retrieved_docs)} relevant code documents"
+        )
 
         # Retrieve semantic memory from Memori Labs (Postgres/SQLite)
         semantic_memories = self.memori_manager.recall_memories(query=query, limit=3)
@@ -356,10 +536,15 @@ class RAG(adal.Component):
                 context_list.append(
                     AdalDocument(
                         text=f"[Known Fact / Semantic Memory]: {mem_text}",
-                        meta_data={"file_path": "memory://semantic_facts", "is_code": False},
+                        meta_data={
+                            "file_path": "memory://semantic_facts",
+                            "is_code": False,
+                        },
                     )
                 )
-            printc(f"RAG: Integrated {len(semantic_memories)} semantic memories into context.", color="green")
+            log.info(
+                f"RAG: Integrated {len(semantic_memories)} semantic memories into context."
+            )
 
         # Generate Answer with LLM
         prompt_kwargs = {
@@ -369,20 +554,26 @@ class RAG(adal.Component):
         }
 
         response = self.generator(prompt_kwargs=prompt_kwargs)
-        printc(f"Raw response: {response.raw_response}", color="yellow")
-        printc(f"Parsed data: {response.data}", color="yellow")
+        log.debug(f"Raw response: {response.raw_response}")
+        log.debug(f"Parsed data: {response.data}")
         if response.error:
-            printc(f"Generator Error: {response.error}", color="red")
+            log.error(f"Generator Error: {response.error}")
 
         final = response.data
 
         # Fallback: if parsing failed, extract from raw JSON
         raw_str = str(response.raw_response or "")
         if final and hasattr(final, "rationale") and hasattr(final, "answer"):
-            if not getattr(final, "rationale", None) and not getattr(final, "answer", None) and raw_str:
+            if (
+                not getattr(final, "rationale", None)
+                and not getattr(final, "answer", None)
+                and raw_str
+            ):
                 try:
                     raw = raw_str
-                    json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+                    json_match = re.search(
+                        r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL
+                    )
                     if json_match:
                         raw = json_match.group(1)
                     parsed = json.loads(raw)
@@ -396,7 +587,9 @@ class RAG(adal.Component):
         elif not final and raw_str:
             try:
                 raw = raw_str
-                json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+                json_match = re.search(
+                    r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL
+                )
                 if json_match:
                     raw = json_match.group(1)
                 parsed = json.loads(raw)
