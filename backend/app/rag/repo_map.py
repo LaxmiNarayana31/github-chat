@@ -3,7 +3,7 @@
 import logging
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from adalflow.core.types import Document as AdalDocument
 
@@ -16,11 +16,11 @@ class RepoMapGenerator:
     def __init__(self, max_tokens: int = 1024):
         self.max_tokens = max_tokens
         self.char_budget = max_tokens * 4
-        self.graph: Dict[str, Set[str]] = defaultdict(set)
-        self.file_symbols: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        self.pagerank_scores: Dict[str, float] = {}
+        self.graph: dict[str, set[str]] = defaultdict(set)
+        self.file_symbols: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.pagerank_scores: dict[str, float] = {}
 
-    def build_from_chunks(self, chunks: List[AdalDocument]) -> 'RepoMapGenerator':
+    def build_from_chunks(self, chunks: list[AdalDocument]) -> "RepoMapGenerator":
         """Construct cross-file symbol reference graph from chunk symbols, imports, and identifier calls."""
         self.graph.clear()
         self.file_symbols.clear()
@@ -28,6 +28,7 @@ class RepoMapGenerator:
         # For mega-repositories (>5,000 chunks), prioritize architectural declarations and public headers
         # to guarantee sub-second PageRank computation and prevent memory exhaustion
         if len(chunks) > 5000:
+
             def _chunk_priority(c: AdalDocument):
                 m = c.meta_data or {}
                 fp = m.get("file_path", "")
@@ -47,7 +48,7 @@ class RepoMapGenerator:
         )
 
         # Pass 1: Build symbol declaration registry
-        symbol_to_file: Dict[str, str] = {}
+        symbol_to_file: dict[str, str] = {}
         for doc in candidate_chunks:
             meta = doc.meta_data or {}
             file_path = meta.get("file_path", "")
@@ -58,7 +59,14 @@ class RepoMapGenerator:
             symbol_type = meta.get("symbol_type")
             line_range = meta.get("line_range")
 
-            if symbol_name and symbol_type in ["function", "method", "class", "declaration", "interface", "struct"]:
+            if symbol_name and symbol_type in [
+                "function",
+                "method",
+                "class",
+                "declaration",
+                "interface",
+                "struct",
+            ]:
                 self.file_symbols[file_path].append(
                     {
                         "name": symbol_name,
@@ -68,7 +76,12 @@ class RepoMapGenerator:
                 )
                 # Register clean identifier for cross-file call resolution
                 clean_sym = symbol_name.split(".")[-1]
-                if len(clean_sym) >= 3 and clean_sym not in ("self", "args", "kwargs", "test"):
+                if len(clean_sym) >= 3 and clean_sym not in (
+                    "self",
+                    "args",
+                    "kwargs",
+                    "test",
+                ):
                     symbol_to_file[clean_sym] = file_path
 
         # Pass 2: Extract explicit imports and cross-file symbol call edges
@@ -109,8 +122,8 @@ class RepoMapGenerator:
         scores = {node: 1.0 / n for node in nodes}
 
         # Reverse adjacency for incoming links
-        incoming: Dict[str, Set[str]] = defaultdict(set)
-        outgoing_counts: Dict[str, int] = defaultdict(int)
+        incoming: dict[str, set[str]] = defaultdict(set)
+        outgoing_counts: dict[str, int] = defaultdict(int)
 
         for src, targets in self.graph.items():
             outgoing_counts[src] = len(targets)
@@ -133,7 +146,7 @@ class RepoMapGenerator:
 
         self.pagerank_scores = scores
 
-    def generate_repo_map(self, focus_query: Optional[str] = None) -> str:
+    def generate_repo_map(self, focus_query: str | None = None) -> str:
         """Render a token-budgeted ASCII repository tree ranked by architectural PageRank centrality."""
         if not self.file_symbols:
             return ""
@@ -143,9 +156,15 @@ class RepoMapGenerator:
         if focus_query:
             query_terms = set(re.findall(r"\b[A-Za-z0-9_]{3,}\b", focus_query.lower()))
             for file_path, symbols in self.file_symbols.items():
-                match_count = sum(1 for s in symbols if any(term in s["name"].lower() for term in query_terms))
+                match_count = sum(
+                    1
+                    for s in symbols
+                    if any(term in s["name"].lower() for term in query_terms)
+                )
                 if match_count > 0:
-                    boosted_scores[file_path] = boosted_scores.get(file_path, 0.01) * (1.5 + match_count)
+                    boosted_scores[file_path] = boosted_scores.get(file_path, 0.01) * (
+                        1.5 + match_count
+                    )
 
         # Sort files by PageRank score descending
         sorted_files = sorted(
@@ -154,7 +173,7 @@ class RepoMapGenerator:
             reverse=True,
         )
 
-        lines: List[str] = ["# Repository Architecture Map (Ranked by Centrality)"]
+        lines: list[str] = ["# Repository Architecture Map (Ranked by Centrality)"]
         current_chars = len(lines[0])
 
         for file_path in sorted_files:
@@ -171,11 +190,12 @@ class RepoMapGenerator:
 
             if current_chars + len(entry) + 1 > self.char_budget:
                 remaining = len(sorted_files) - sorted_files.index(file_path)
-                lines.append(f"└── ... [{remaining} more files omitted for context budget]")
+                lines.append(
+                    f"└── ... [{remaining} more files omitted for context budget]"
+                )
                 break
 
             lines.append(entry)
             current_chars += len(entry) + 1
 
         return "\n".join(lines)
-
