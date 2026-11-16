@@ -4,12 +4,9 @@ import json
 import logging
 import threading
 import uuid
-from typing import Any, Dict, Iterator, List, Optional, Union
+from collections.abc import Iterator
+from typing import Any
 
-from fastapi.responses import StreamingResponse
-
-from backend.app.rag.rag import RAG
-from backend.app.services.redis_manager import RedisCacheManager
 from backend.app.dto.document_dto import Document, DocumentMetadata
 from backend.app.dto.rag_dto import (
     AsyncInitResponse,
@@ -23,8 +20,11 @@ from backend.app.dto.rag_dto import (
     SetContextRequest,
     SetContextResponse,
 )
+from backend.app.rag.rag import RAG
+from backend.app.services.redis_manager import RedisCacheManager
 from backend.app.utils.env_utils import ensure_api_keys_configured
 from backend.app.utils.repo_utils import get_repo_slug, normalize_repo_url
+from fastapi.responses import StreamingResponse
 
 log = logging.getLogger(__name__)
 
@@ -32,18 +32,18 @@ log = logging.getLogger(__name__)
 class RAGService:
     """Enterprise service managing session isolation, caching, distributed locks, and RAG orchestrations."""
 
-    _instance: Optional['RAGService'] = None
+    _instance: RAGService | None = None
     _lock = threading.Lock()
 
     def __init__(self):
-        self._session_rags: Dict[str, RAG] = {}
-        self._session_repos: Dict[str, str] = {}
+        self._session_rags: dict[str, RAG] = {}
+        self._session_repos: dict[str, str] = {}
         self._default_session = "api_user"
         self._init_lock = threading.Lock()
         self.redis_cache = RedisCacheManager.get_instance()
 
     @classmethod
-    def get_instance(cls) -> 'RAGService':
+    def get_instance(cls) -> RAGService:
         """Singleton accessor for RAGService."""
         if cls._instance is None:
             with cls._lock:
@@ -51,13 +51,13 @@ class RAGService:
                     cls._instance = cls()
         return cls._instance
 
-    def _resolve_session_id(self, session_id: Optional[str] = None) -> str:
+    def _resolve_session_id(self, session_id: str | None = None) -> str:
         """Resolve clean session identifier for multi-user isolation."""
         if session_id and str(session_id).strip():
             return str(session_id).strip()
         return self._default_session
 
-    def get_rag(self, session_id: Optional[str] = None) -> RAG:
+    def get_rag(self, session_id: str | None = None) -> RAG:
         """Get or lazily instantiate session-isolated RAG engine with API key validation."""
         sid = self._resolve_session_id(session_id)
         if sid not in self._session_rags:
@@ -67,18 +67,24 @@ class RAGService:
                     try:
                         rag = RAG(entity_id=sid, process_id="fastapi_backend")
                         self._session_rags[sid] = rag
-                        log.info(f"RAGService: Initialized core RAG engine for session '{sid}'.")
+                        log.info(
+                            f"RAGService: Initialized core RAG engine for session '{sid}'."
+                        )
                     except Exception as e:
-                        log.error(f"RAGService: Failed to instantiate RAG engine for session '{sid}': {e}")
-                        raise RuntimeError(f"Failed to initialize RAG engine: {e}") from e
+                        log.error(
+                            f"RAGService: Failed to instantiate RAG engine for session '{sid}': {e}"
+                        )
+                        raise RuntimeError(
+                            f"Failed to initialize RAG engine: {e}"
+                        ) from e
         return self._session_rags[sid]
 
     def initialize_repository(
         self,
         repo_url: str,
         force_reindex: bool = False,
-        token: Optional[str] = None,
-        session_id: Optional[str] = None,
+        token: str | None = None,
+        session_id: str | None = None,
     ) -> str:
         """Clone repository, generate chunk embeddings, and build Qdrant hybrid index."""
         normalized = normalize_repo_url(repo_url)
@@ -92,15 +98,23 @@ class RAGService:
         lock_key = f"ingest:{normalized}"
         lock_acquired = self.redis_cache.acquire_lock(lock_key, timeout_seconds=600)
         if not lock_acquired:
-            log.info(f"RAGService [{sid}]: Another process holds lock for '{normalized}'. Awaiting or reusing collection...")
+            log.info(
+                f"RAGService [{sid}]: Another process holds lock for '{normalized}'. Awaiting or reusing collection..."
+            )
 
         try:
-            log.info(f"RAGService [{sid}]: Preparing index for '{normalized}' (force_reindex={force_reindex})")
-            rag_instance.prepare_retriever(normalized, force_reindex=force_reindex, token=token)
+            log.info(
+                f"RAGService [{sid}]: Preparing index for '{normalized}' (force_reindex={force_reindex})"
+            )
+            rag_instance.prepare_retriever(
+                normalized, force_reindex=force_reindex, token=token
+            )
             self._session_repos[sid] = normalized
             return normalized
         except Exception as e:
-            log.error(f"RAGService [{sid}]: Failed to prepare retriever for '{normalized}': {e}")
+            log.error(
+                f"RAGService [{sid}]: Failed to prepare retriever for '{normalized}': {e}"
+            )
             raise
         finally:
             if lock_acquired:
@@ -110,8 +124,8 @@ class RAGService:
         self,
         repo_url: str,
         force_reindex: bool = False,
-        token: Optional[str] = None,
-        session_id: Optional[str] = None,
+        token: str | None = None,
+        session_id: str | None = None,
     ) -> str:
         """Dispatch background repository indexing job and return a unique job_id for polling."""
         normalized = normalize_repo_url(repo_url)
@@ -172,7 +186,7 @@ class RAGService:
                         "job_id": job_id,
                         "status": "failed",
                         "progress": 0.0,
-                        "message": f"Indexing failed: {str(exc)}",
+                        "message": f"Indexing failed: {exc!s}",
                         "repo_url": normalized,
                         "slug": slug,
                     },
@@ -182,15 +196,15 @@ class RAGService:
         thread.start()
         return job_id
 
-    def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job_status(self, job_id: str) -> dict[str, Any] | None:
         """Retrieve background indexing progress for given job_id."""
         return self.redis_cache.get_job_status(job_id)
 
     def query(
         self,
         query_str: str,
-        repo_url: Optional[str] = None,
-        session_id: Optional[str] = None,
+        repo_url: str | None = None,
+        session_id: str | None = None,
     ) -> QueryResponse:
         """Execute semantic search and LLM generation for a user query with Redis caching."""
         sid = self._resolve_session_id(session_id)
@@ -198,11 +212,16 @@ class RAGService:
 
         # If repo_url is provided and retriever is not yet ready, initialize it
         current_repo = self._session_repos.get(sid)
-        if repo_url and (rag_instance.retriever is None or current_repo != normalize_repo_url(repo_url)):
+        if repo_url and (
+            rag_instance.retriever is None
+            or current_repo != normalize_repo_url(repo_url)
+        ):
             self.initialize_repository(repo_url, session_id=sid)
 
         if rag_instance.retriever is None:
-            raise ValueError("No repository has been indexed yet. Please initialize a repository first.")
+            raise ValueError(
+                "No repository has been indexed yet. Please initialize a repository first."
+            )
 
         cleaned_query = query_str.strip()
         if not cleaned_query:
@@ -211,7 +230,9 @@ class RAGService:
         active_collection = rag_instance.current_collection or "default"
 
         # Check Redis query cache for fast sub-10ms response
-        cached = self.redis_cache.get_query_cache(repo_slug=active_collection, query=cleaned_query)
+        cached = self.redis_cache.get_query_cache(
+            repo_slug=active_collection, query=cleaned_query
+        )
         if cached:
             cached_contexts = [
                 Document(
@@ -286,8 +307,8 @@ class RAGService:
     def stream_query(
         self,
         query_str: str,
-        repo_url: Optional[str] = None,
-        session_id: Optional[str] = None,
+        repo_url: str | None = None,
+        session_id: str | None = None,
     ) -> Iterator[str]:
         """Execute semantic search and stream live tokens via LangGraph Agentic RAG in SSE format."""
         sid = self._resolve_session_id(session_id)
@@ -295,12 +316,17 @@ class RAGService:
             rag_instance = self.get_rag(session_id=sid)
             current_repo = self._session_repos.get(sid)
 
-            if repo_url and (rag_instance.retriever is None or current_repo != normalize_repo_url(repo_url)):
+            if repo_url and (
+                rag_instance.retriever is None
+                or current_repo != normalize_repo_url(repo_url)
+            ):
                 yield f"event: status\ndata: {json.dumps({'stage': 'indexing', 'message': 'Indexing repository...'})}\n\n"
                 self.initialize_repository(repo_url, session_id=sid)
 
             if rag_instance.retriever is None:
-                err_payload = {"error": "No repository has been indexed yet. Please initialize a repository first."}
+                err_payload = {
+                    "error": "No repository has been indexed yet. Please initialize a repository first."
+                }
                 yield f"event: error\ndata: {json.dumps(err_payload)}\n\n"
                 return
 
@@ -311,11 +337,15 @@ class RAGService:
                 return
 
             active_collection = rag_instance.current_collection or "default"
-            cached = self.redis_cache.get_query_cache(repo_slug=active_collection, query=cleaned_query)
+            cached = self.redis_cache.get_query_cache(
+                repo_slug=active_collection, query=cleaned_query
+            )
             if cached:
                 cached_contexts = [
                     {
-                        "file_path": c.get("meta_data", {}).get("file_path", "") if isinstance(c.get("meta_data"), dict) else "",
+                        "file_path": c.get("meta_data", {}).get("file_path", "")
+                        if isinstance(c.get("meta_data"), dict)
+                        else "",
                         "text": c.get("text", "")[:300],
                     }
                     for c in cached.get("contexts", [])
@@ -358,15 +388,19 @@ class RAGService:
             err_payload = {"error": str(e)}
             yield f"event: error\ndata: {json.dumps(err_payload)}\n\n"
 
-    def clear_memory(self, session_id: Optional[str] = None) -> None:
+    def clear_memory(self, session_id: str | None = None) -> None:
         """Clear dialog turns in the active conversation memory and Memori storage for a specific session."""
         sid = self._resolve_session_id(session_id)
         try:
             rag_instance = self._session_rags.get(sid)
             if rag_instance is None:
-                log.debug(f"RAGService [{sid}]: No active RAG instance; memory is already clean.")
+                log.debug(
+                    f"RAGService [{sid}]: No active RAG instance; memory is already clean."
+                )
                 return
-            if hasattr(rag_instance, "memory") and hasattr(rag_instance.memory, "current_conversation"):
+            if hasattr(rag_instance, "memory") and hasattr(
+                rag_instance.memory, "current_conversation"
+            ):
                 rag_instance.memory.current_conversation.dialog_turns.clear()
             if hasattr(rag_instance, "memori_manager") and rag_instance.memori_manager:
                 rag_instance.memori_manager.clear_memory(session_id=sid)
@@ -375,7 +409,7 @@ class RAGService:
             log.error(f"RAGService [{sid}]: Error clearing memory: {e}")
             raise
 
-    def set_context(self, messages: Any, session_id: Optional[str] = None) -> int:
+    def set_context(self, messages: Any, session_id: str | None = None) -> int:
         """Reconstruct dialog turns from provided message history for a specific session."""
         sid = self._resolve_session_id(session_id)
         try:
@@ -386,7 +420,9 @@ class RAGService:
             try:
                 rag_instance = self.get_rag(session_id=sid)
             except (ValueError, RuntimeError) as e:
-                log.warning(f"RAGService [{sid}]: API keys not yet available during set_context: {e}")
+                log.warning(
+                    f"RAGService [{sid}]: API keys not yet available during set_context: {e}"
+                )
                 return len(msg_list) // 2
 
             self.clear_memory(session_id=sid)
@@ -397,10 +433,26 @@ class RAGService:
                     user_msg = msg_list[i]
                     assistant_msg = msg_list[i + 1]
 
-                    u_role = user_msg.get("role", "") if isinstance(user_msg, dict) else getattr(user_msg, "role", "")
-                    u_content = user_msg.get("content", "") if isinstance(user_msg, dict) else getattr(user_msg, "content", "")
-                    a_role = assistant_msg.get("role", "") if isinstance(assistant_msg, dict) else getattr(assistant_msg, "role", "")
-                    a_content = assistant_msg.get("content", "") if isinstance(assistant_msg, dict) else getattr(assistant_msg, "content", "")
+                    u_role = (
+                        user_msg.get("role", "")
+                        if isinstance(user_msg, dict)
+                        else getattr(user_msg, "role", "")
+                    )
+                    u_content = (
+                        user_msg.get("content", "")
+                        if isinstance(user_msg, dict)
+                        else getattr(user_msg, "content", "")
+                    )
+                    a_role = (
+                        assistant_msg.get("role", "")
+                        if isinstance(assistant_msg, dict)
+                        else getattr(assistant_msg, "role", "")
+                    )
+                    a_content = (
+                        assistant_msg.get("content", "")
+                        if isinstance(assistant_msg, dict)
+                        else getattr(assistant_msg, "content", "")
+                    )
 
                     if u_role == "user" and a_role == "assistant":
                         rag_instance.memory.add_dialog_turn(
@@ -438,7 +490,9 @@ class RAGService:
         except ValueError:
             raise
         except Exception as e:
-            log.error(f"RAGService: Sync initialization failed for '{request.repo_url}': {e}")
+            log.error(
+                f"RAGService: Sync initialization failed for '{request.repo_url}': {e}"
+            )
             raise RuntimeError(f"Repository indexing failed: {e}") from e
 
     def handle_init_async(self, request: InitRequest) -> AsyncInitResponse:
@@ -461,10 +515,12 @@ class RAGService:
         except ValueError:
             raise
         except Exception as e:
-            log.error(f"RAGService: Async initialization failed for '{request.repo_url}': {e}")
+            log.error(
+                f"RAGService: Async initialization failed for '{request.repo_url}': {e}"
+            )
             raise RuntimeError(f"Repository indexing failed: {e}") from e
 
-    def get_job_status_response(self, job_id: str) -> Optional[JobStatusResponse]:
+    def get_job_status_response(self, job_id: str) -> JobStatusResponse | None:
         """Fetch real-time job progress and construct JobStatusResponse model."""
         try:
             status_info = self.get_job_status(job_id)
@@ -521,14 +577,18 @@ class RAGService:
 
     def clear_conversation_memory(
         self,
-        session_id: Optional[str] = None,
-        request: Optional[ClearMemoryRequest] = None,
+        session_id: str | None = None,
+        request: ClearMemoryRequest | None = None,
     ) -> ClearMemoryResponse:
         """Clear conversation memory for a session and return confirmation DTO."""
         try:
-            resolved_session = (request.session_id if request and request.session_id else None) or session_id
+            resolved_session = (
+                request.session_id if request and request.session_id else None
+            ) or session_id
             self.clear_memory(session_id=resolved_session)
-            return ClearMemoryResponse(status="success", message="Conversation memory cleared.")
+            return ClearMemoryResponse(
+                status="success", message="Conversation memory cleared."
+            )
         except ValueError:
             raise
         except Exception as e:
@@ -537,8 +597,8 @@ class RAGService:
 
     def restore_context(
         self,
-        payload: Union[SetContextRequest, List[Dict[str, Any]]],
-        session_id: Optional[str] = None,
+        payload: SetContextRequest | list[dict[str, Any]],
+        session_id: str | None = None,
     ) -> SetContextResponse:
         """Restore conversation context from history messages and return count of restored turns."""
         try:
@@ -549,4 +609,3 @@ class RAGService:
         except Exception as e:
             log.error(f"RAGService: Restore context failed: {e}")
             raise RuntimeError(f"Restore context failed: {e}") from e
-
