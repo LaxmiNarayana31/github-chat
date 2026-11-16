@@ -4,22 +4,21 @@ import logging
 import os
 import shutil
 import subprocess
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import adalflow as adal
+import httpx
 from adalflow.components.data_process import TextSplitter, ToEmbeddings
 from adalflow.core.db import LocalDB
 from adalflow.core.types import Document
 from adalflow.utils import get_adalflow_default_root_path, printc
-import httpx
-
 from backend.app.config.config import config
 from backend.app.config.constants import (
     ALL_INDEXABLE_EXTENSIONS,
     CODE_EXTENSIONS,
     IGNORED_DIRS,
-    IGNORED_FILES,
     IGNORED_FILE_SUFFIXES,
+    IGNORED_FILES,
     MAX_FILE_SIZE_BYTES,
     MIN_FILE_CHAR_LENGTH,
 )
@@ -32,20 +31,33 @@ from backend.app.utils.repo_utils import (
     get_authenticated_clone_url,
     get_repo_slug,
     sanitize_collection_slug,
+    validate_safe_git_url,
 )
 
 log = logging.getLogger(__name__)
 
 
 # Clone github repo to local path
-def download_github_repo(repo_url: str, local_path: str, token: Optional[str] = None):
+def download_github_repo(repo_url: str, local_path: str, token: str | None = None):
     """Clone a remote GitHub repository to a local directory with error handling and optional PAT token."""
+    is_safe, reason = validate_safe_git_url(repo_url)
+    if not is_safe:
+        raise ValueError(f"Unsafe repository URL rejected: {reason}")
+
     try:
-        subprocess.run(["git", "--version"], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(
+            ["git", "--version"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         os.makedirs(local_path, exist_ok=True)
         # If directory already has files, remove or re-clone
         if os.path.exists(local_path) and os.listdir(local_path):
-            printc(f"Directory {local_path} already exists, clearing for fresh clone...", color="yellow")
+            printc(
+                f"Directory {local_path} already exists, clearing for fresh clone...",
+                color="yellow",
+            )
             try:
                 shutil.rmtree(local_path)
             except Exception as rm_err:
@@ -53,23 +65,46 @@ def download_github_repo(repo_url: str, local_path: str, token: Optional[str] = 
 
         clone_url = get_authenticated_clone_url(repo_url, token=token)
         # Attempt blobless shallow clone (--filter=blob:none) to save gigabytes of bandwidth and disk on mega-repos
-        cmd_blobless = ["git", "clone", "--depth", "1", "--single-branch", "--no-tags", "--filter=blob:none", clone_url, local_path]
+        cmd_blobless = [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--single-branch",
+            "--no-tags",
+            "--filter=blob:none",
+            "--",
+            clone_url,
+            local_path,
+        ]
         try:
             result = subprocess.run(
                 cmd_blobless,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=120,
             )
             return result.stdout.decode("utf-8")
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             # Fallback to standard shallow clone if git server does not support blobless filters
-            cmd_standard = ["git", "clone", "--depth", "1", "--single-branch", "--no-tags", clone_url, local_path]
+            cmd_standard = [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--single-branch",
+                "--no-tags",
+                "--",
+                clone_url,
+                local_path,
+            ]
             result = subprocess.run(
                 cmd_standard,
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                timeout=120,
             )
             return result.stdout.decode("utf-8")
     except subprocess.CalledProcessError as e:
@@ -88,10 +123,10 @@ def download_github_repo(repo_url: str, local_path: str, token: Optional[str] = 
 
 def stream_github_tree_documents(
     repo_url: str,
-    token: Optional[str] = None,
+    token: str | None = None,
     branch: str = "HEAD",
     max_files: int = 1000,
-) -> List[Document]:
+) -> list[Document]:
     """Stream and parse indexable repository files directly via GitHub Git Trees API without local disk cloning."""
     meta = extract_repo_metadata(repo_url)
     if meta.get("is_local"):
@@ -112,14 +147,18 @@ def stream_github_tree_documents(
     if auth_token:
         headers["Authorization"] = f"token {auth_token}"
 
-    tree_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-    documents: List[Document] = []
+    tree_url = (
+        f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+    )
+    documents: list[Document] = []
 
     try:
         with httpx.Client(timeout=30.0) as client:
             resp = client.get(tree_url, headers=headers)
             if resp.status_code != 200:
-                log.warning(f"GitHub Trees API error ({resp.status_code}): {resp.text[:200]}")
+                log.warning(
+                    f"GitHub Trees API error ({resp.status_code}): {resp.text[:200]}"
+                )
                 return []
 
             tree_data = resp.json()
@@ -151,7 +190,9 @@ def stream_github_tree_documents(
                 if len(indexable_items) >= max_files:
                     break
 
-            log.info(f"GitHub Trees API: Discovered {len(indexable_items)} indexable files in {owner}/{repo}")
+            log.info(
+                f"GitHub Trees API: Discovered {len(indexable_items)} indexable files in {owner}/{repo}"
+            )
 
             for item in indexable_items:
                 file_path = item.get("path", "")
@@ -189,7 +230,7 @@ def stream_github_tree_documents(
 
 
 # Read all documents from local path with production-grade filtering
-def read_all_documents(path: str) -> List[Document]:
+def read_all_documents(path: str) -> list[Document]:
     """Scan and read all valid code and documentation files, skipping binaries and lockfiles."""
     documents = []
 
@@ -241,7 +282,10 @@ def read_all_documents(path: str) -> List[Document]:
             except Exception as e:
                 log.warning(f"Error reading {file_path}: {e}")
 
-    printc(f"DataPipeline: Read {len(documents)} clean source files from {path}", color="green")
+    printc(
+        f"DataPipeline: Read {len(documents)} clean source files from {path}",
+        color="green",
+    )
     return documents
 
 
@@ -307,22 +351,22 @@ def prepare_embedding_pipeline():
         model_client=config["embedder"]["model_client"](),
         model_kwargs=config["embedder"]["model_kwargs"],
     )
-    return ToEmbeddings(
-        embedder=embedder, batch_size=config["embedder"]["batch_size"]
-    )
+    return ToEmbeddings(embedder=embedder, batch_size=config["embedder"]["batch_size"])
 
 
 # Transform documents, validate embedding dimensions, and save to db
-def transform_documents_and_save_to_db(documents: List[Document], db_path: str) -> LocalDB:
+def transform_documents_and_save_to_db(
+    documents: list[Document], db_path: str
+) -> LocalDB:
     expected_dim = config["embedder"].get("dimensions", 768)
     ast_chunker = ASTChunker()
     dedup = BlobDeduplicator.get_instance()
     redis_mgr = RedisCacheManager.get_instance()
 
     # Step 1: Structural AST and syntax chunking with Git-blob deduplication
-    docs_to_embed: List[Document] = []
-    already_embedded_docs: List[Document] = []
-    all_chunks_for_repo_map: List[Document] = []
+    docs_to_embed: list[Document] = []
+    already_embedded_docs: list[Document] = []
+    all_chunks_for_repo_map: list[Document] = []
 
     splitter_cfg = config.get("text_splitter", {})
     text_splitter = TextSplitter(**splitter_cfg) if splitter_cfg else None
@@ -342,7 +386,11 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
                     text=item["text"],
                     meta_data=item.get("meta_data", {}),
                 )
-                if "vector" in item and item["vector"] and len(item["vector"]) == expected_dim:
+                if (
+                    "vector" in item
+                    and item["vector"]
+                    and len(item["vector"]) == expected_dim
+                ):
                     c_doc.vector = item["vector"]
                     already_embedded_docs.append(c_doc)
                 else:
@@ -351,7 +399,9 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
             continue
 
         if is_code:
-            ast_chunks = ast_chunker.chunk_file(doc.text, file_path=file_path, file_type=file_type)
+            ast_chunks = ast_chunker.chunk_file(
+                doc.text, file_path=file_path, file_type=file_type
+            )
             if ast_chunks:
                 for chunk in ast_chunks:
                     chunk_meta = chunk.meta_data or {}
@@ -389,12 +439,14 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
             redis_mgr.setex(f"repomap:{slug}", 86400 * 7, rendered_map)
             col_name = sanitize_collection_slug(slug)
             redis_mgr.setex(f"repomap:{col_name}", 86400 * 7, rendered_map)
-            log.info(f"DataPipeline: Cached PageRank Repo Map for '{slug}' & '{col_name}' ({len(rendered_map)} chars).")
+            log.info(
+                f"DataPipeline: Cached PageRank Repo Map for '{slug}' & '{col_name}' ({len(rendered_map)} chars)."
+            )
     except Exception as map_err:
         log.warning(f"DataPipeline: Error building RepoMap: {map_err}")
 
     # Step 3: Embed documents directly via ToEmbeddings (avoiding character-based re-splitting)
-    newly_embedded_docs: List[Document] = []
+    newly_embedded_docs: list[Document] = []
     db = LocalDB()
     if docs_to_embed:
         embedder_transformer = prepare_embedding_pipeline()
@@ -411,7 +463,7 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
     # Step 4: Validate uniform vectors and update blob cache
     valid_docs = []
     invalid_count = 0
-    blob_groups: Dict[str, List[Dict[str, Any]]] = {}
+    blob_groups: dict[str, list[dict[str, Any]]] = {}
 
     for doc in transformed_docs:
         if hasattr(doc, "vector") and doc.vector and len(doc.vector) == expected_dim:
@@ -420,11 +472,13 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
             if b_hash:
                 if b_hash not in blob_groups:
                     blob_groups[b_hash] = []
-                blob_groups[b_hash].append({
-                    "text": doc.text,
-                    "vector": doc.vector,
-                    "meta_data": doc.meta_data,
-                })
+                blob_groups[b_hash].append(
+                    {
+                        "text": doc.text,
+                        "vector": doc.vector,
+                        "meta_data": doc.meta_data,
+                    }
+                )
         else:
             invalid_count += 1
 
@@ -449,7 +503,11 @@ def transform_documents_and_save_to_db(documents: List[Document], db_path: str) 
         color="green",
     )
 
-    db.data["split_and_embed"] = valid_docs
+    if not hasattr(db, "transformed_items") or not isinstance(
+        db.transformed_items, dict
+    ):
+        db.transformed_items = {}
+    db.transformed_items["split_and_embed"] = valid_docs
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     db.transformer_setups = {}
     try:
@@ -491,35 +549,55 @@ class DatabaseManager:
         save_db_file = os.path.join(root_path, "databases", f"{slug}.pkl")
         os.makedirs(save_repo_dir, exist_ok=True)
         os.makedirs(os.path.dirname(save_db_file), exist_ok=True)
-        self.repo_paths = {"save_repo_dir": save_repo_dir, "save_db_file": save_db_file, "slug": slug}
+        self.repo_paths = {
+            "save_repo_dir": save_repo_dir,
+            "save_db_file": save_db_file,
+            "slug": slug,
+        }
 
         expected_dim = config["embedder"].get("dimensions", 768)
 
         # If cached database exists and reindexing is not forced, validate cached embeddings
-        if not force_reindex and os.path.exists(save_db_file) and os.path.getsize(save_db_file) > 0:
+        if (
+            not force_reindex
+            and os.path.exists(save_db_file)
+            and os.path.getsize(save_db_file) > 0
+        ):
             printc("Checking existing cached database...", color="blue")
             try:
                 self.db = LocalDB.load_state(save_db_file)
                 docs = self.db.get_transformed_data(key="split_and_embed")
                 if docs and len(docs) > 0:
-                    if all(hasattr(d, "vector") and d.vector and len(d.vector) == expected_dim for d in docs):
+                    if all(
+                        hasattr(d, "vector")
+                        and d.vector
+                        and len(d.vector) == expected_dim
+                        for d in docs
+                    ):
                         printc(
                             f"Cache verified: Loaded {len(docs)} documents with uniform {expected_dim}-dim vectors.",
                             color="green",
                         )
                         return docs
-                    printc("Corrupted cache detected. Purging cache and re-indexing...", color="yellow")
+                    printc(
+                        "Corrupted cache detected. Purging cache and re-indexing...",
+                        color="yellow",
+                    )
                     try:
                         os.remove(save_db_file)
                     except OSError as rm_err:
-                        log.warning(f"Could not remove corrupted cache file {save_db_file}: {rm_err}")
+                        log.warning(
+                            f"Could not remove corrupted cache file {save_db_file}: {rm_err}"
+                        )
             except Exception as e:
                 printc(f"Failed to load cached DB ({e}) — reindexing.", color="yellow")
                 try:
                     if os.path.exists(save_db_file):
                         os.remove(save_db_file)
                 except OSError as rm_err:
-                    log.warning(f"Could not remove invalid cache file {save_db_file}: {rm_err}")
+                    log.warning(
+                        f"Could not remove invalid cache file {save_db_file}: {rm_err}"
+                    )
 
         printc("Indexing repository...", color="green")
         docs = stream_and_index_repository_batches(
@@ -544,17 +622,19 @@ def stream_and_index_repository_batches(
     save_db_file: str,
     repo_slug: str,
     batch_file_count: int = 150,
-) -> List[Document]:
+) -> list[Document]:
     """Stream valid code files in fixed batches, generating AST chunks and embeddings with constant O(1) RAM."""
     redis_mgr = RedisCacheManager.get_instance()
     checkpoint = redis_mgr.get_ingest_checkpoint(repo_slug) if redis_mgr else None
     start_index = checkpoint.get("last_processed_index", 0) if checkpoint else 0
 
-    accumulated_embedded_docs: List[Document] = []
-    current_batch_docs: List[Document] = []
+    accumulated_embedded_docs: list[Document] = []
+    current_batch_docs: list[Document] = []
     file_counter = 0
 
-    log.info(f"Streaming ingestion started for {save_repo_dir} (checkpoint resume index: {start_index})")
+    log.info(
+        f"Streaming ingestion started for {save_repo_dir} (checkpoint resume index: {start_index})"
+    )
 
     for doc in stream_documents(save_repo_dir):
         file_counter += 1
@@ -565,25 +645,37 @@ def stream_and_index_repository_batches(
 
         if len(current_batch_docs) >= batch_file_count:
             try:
-                batch_db = transform_documents_and_save_to_db(current_batch_docs, save_db_file)
-                batch_embedded = batch_db.get_transformed_data(key="split_and_embed") or []
+                batch_db = transform_documents_and_save_to_db(
+                    current_batch_docs, save_db_file
+                )
+                batch_embedded = (
+                    batch_db.get_transformed_data(key="split_and_embed") or []
+                )
                 accumulated_embedded_docs.extend(batch_embedded)
 
                 if redis_mgr:
-                    redis_mgr.set_ingest_checkpoint(repo_slug, file_counter, total_files=-1)
+                    redis_mgr.set_ingest_checkpoint(
+                        repo_slug, file_counter, total_files=-1
+                    )
             except Exception as batch_err:
-                log.warning(f"Error processing streaming batch at file #{file_counter}: {batch_err}")
+                log.warning(
+                    f"Error processing streaming batch at file #{file_counter}: {batch_err}"
+                )
 
             current_batch_docs.clear()
             gc.collect()
 
     if current_batch_docs:
         try:
-            batch_db = transform_documents_and_save_to_db(current_batch_docs, save_db_file)
+            batch_db = transform_documents_and_save_to_db(
+                current_batch_docs, save_db_file
+            )
             batch_embedded = batch_db.get_transformed_data(key="split_and_embed") or []
             accumulated_embedded_docs.extend(batch_embedded)
         except Exception as batch_err:
-            log.warning(f"Error processing final batch at file #{file_counter}: {batch_err}")
+            log.warning(
+                f"Error processing final batch at file #{file_counter}: {batch_err}"
+            )
         current_batch_docs.clear()
         gc.collect()
 
@@ -598,9 +690,9 @@ def sync_git_delta(
     local_path: str,
     previous_commit: str,
     new_commit: str = "HEAD",
-    qdrant_manager: Optional[Any] = None,
-    collection_name: Optional[str] = None,
-) -> Dict[str, Any]:
+    qdrant_manager: Any | None = None,
+    collection_name: str | None = None,
+) -> dict[str, Any]:
     """Incremental Change Data Capture (CDC): identifies changed, added, and deleted files between Git commits
 
     and synchronizes Qdrant vector store by removing deleted/modified file points and returning
@@ -628,9 +720,9 @@ def sync_git_delta(
             "updated_docs": [],
         }
 
-    deleted_files: List[str] = []
-    modified_files: List[str] = []
-    added_files: List[str] = []
+    deleted_files: list[str] = []
+    modified_files: list[str] = []
+    added_files: list[str] = []
 
     for line in diff_lines:
         parts = line.strip().split("\t")
@@ -654,12 +746,14 @@ def sync_git_delta(
         for fpath in files_to_remove:
             normalized_rel = fpath.replace("\\", "/")
             try:
-                qdrant_manager.delete_points_by_file_path(collection_name, normalized_rel)
+                qdrant_manager.delete_points_by_file_path(
+                    collection_name, normalized_rel
+                )
             except Exception as del_err:
                 log.warning(f"Error deleting points for {fpath}: {del_err}")
 
     # Read and construct Document objects for added + modified files
-    updated_docs: List[Document] = []
+    updated_docs: list[Document] = []
     files_to_read = set(added_files + modified_files)
     for fpath in sorted(list(files_to_read)):
         full_path = os.path.join(local_path, fpath)
