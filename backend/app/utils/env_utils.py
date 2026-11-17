@@ -1,6 +1,6 @@
-import os
 import logging
-from typing import Dict
+import os
+
 from dotenv import load_dotenv
 
 log = logging.getLogger(__name__)
@@ -8,10 +8,10 @@ log = logging.getLogger(__name__)
 
 def load_environment() -> None:
     """Loads environment variables from .env file."""
-    load_dotenv()
+    load_dotenv(verbose=True)
 
 
-def check_api_keys() -> Dict[str, bool]:
+def check_api_keys() -> dict[str, bool]:
     """Check availability of required third-party API keys without raising exceptions."""
     try:
         load_environment()
@@ -29,13 +29,15 @@ def check_api_keys() -> Dict[str, bool]:
 
 def ensure_api_keys_configured() -> None:
     """Verify that both GEMINI_API_KEY and GROQ_API_KEY are configured.
-    
+
     Raises:
         ValueError: If either key is missing.
     """
     try:
         keys = check_api_keys()
-        missing = [k.upper() + "_API_KEY" for k, configured in keys.items() if not configured]
+        missing = [
+            k.upper() + "_API_KEY" for k, configured in keys.items() if not configured
+        ]
         if missing:
             raise ValueError(
                 f"Missing required API key(s): {', '.join(missing)}. "
@@ -52,7 +54,10 @@ def build_postgres_url() -> str:
     """Build PostgreSQL connection URL from environment variables or direct URI."""
     try:
         load_environment()
-        direct_url = os.getenv("DATABASE_URL", "").strip() or os.getenv("POSTGRES_URL", "").strip()
+        direct_url = (
+            os.getenv("DATABASE_URL", "").strip()
+            or os.getenv("POSTGRES_URL", "").strip()
+        )
         if direct_url:
             if direct_url.startswith("postgres://"):
                 direct_url = "postgresql://" + direct_url[len("postgres://") :]
@@ -67,7 +72,9 @@ def build_postgres_url() -> str:
             ssl_mode = os.getenv("SSL_MODE", "require").strip() or "require"
 
             auth = f"{db_user}:{db_password}@" if (db_user or db_password) else ""
-            return f"postgresql://{auth}{db_host}:{db_port}/{db_name}?sslmode={ssl_mode}"
+            return (
+                f"postgresql://{auth}{db_host}:{db_port}/{db_name}?sslmode={ssl_mode}"
+            )
 
         return ""
     except Exception as e:
