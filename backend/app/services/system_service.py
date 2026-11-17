@@ -1,8 +1,8 @@
 """Enterprise system service managing API metadata and system health evaluations."""
 
-from datetime import datetime, timezone
 import logging
-from typing import Dict, Optional
+from datetime import UTC, datetime
+from typing import Optional
 
 from backend.app.dto.system_dto import HealthResponse
 from backend.app.services.redis_manager import RedisCacheManager
@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 class SystemService:
     """Enterprise service providing system status, health checks, and API metadata."""
 
-    _instance: Optional['SystemService'] = None
+    _instance: Optional["SystemService"] = None
 
     def __init__(self):
         """Initialize SystemService with Redis cache manager instance."""
@@ -25,13 +25,13 @@ class SystemService:
             self.redis_mgr = None
 
     @classmethod
-    def get_instance(cls) -> 'SystemService':
+    def get_instance(cls) -> "SystemService":
         """Singleton accessor for SystemService."""
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    def get_api_overview(self) -> Dict[str, str]:
+    def get_api_overview(self) -> dict[str, str]:
         """Return high-level API metadata and documentation links."""
         try:
             return {
@@ -54,7 +54,7 @@ class SystemService:
 
             return HealthResponse(
                 status="healthy",
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 version="1.0.0",
                 gemini_configured=bool(keys.get("gemini", False)),
                 groq_configured=bool(keys.get("groq", False)),
@@ -65,7 +65,7 @@ class SystemService:
             log.error(f"SystemService: Error evaluating system health: {e}")
             return HealthResponse(
                 status="degraded",
-                timestamp=datetime.now(timezone.utc).isoformat(),
+                timestamp=datetime.now(UTC).isoformat(),
                 version="1.0.0",
                 gemini_configured=False,
                 groq_configured=False,
