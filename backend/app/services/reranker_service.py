@@ -1,7 +1,7 @@
 """Fast local Cross-Encoder Reranker service using FlashRank for low-latency code retrieval scoring."""
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Optional
 
 from adalflow.core.types import Document as AdalDocument
 from flashrank import Ranker, RerankRequest
@@ -12,16 +12,16 @@ log = logging.getLogger(__name__)
 class RerankerService:
     """Provides high-throughput, low-latency cross-encoder reranking for code search candidates."""
 
-    _instance: Optional['RerankerService'] = None
+    _instance: Optional["RerankerService"] = None
 
     def __init__(self, model_name: str = "ms-marco-TinyBERT-L-2-v2"):
         self.model_name = model_name
-        self._ranker: Optional[Ranker] = None
+        self._ranker: Ranker | None = None
         self._available: bool = False
         self._init_ranker()
 
     @classmethod
-    def get_instance(cls) -> 'RerankerService':
+    def get_instance(cls) -> "RerankerService":
         """Singleton accessor for RerankerService."""
         if cls._instance is None:
             cls._instance = cls()
@@ -34,7 +34,9 @@ class RerankerService:
             self._available = True
             log.info(f"RerankerService initialized with model '{self.model_name}'")
         except Exception as e:
-            log.warning(f"RerankerService: FlashRank initialization failed, falling back to heuristic scoring: {e}")
+            log.warning(
+                f"RerankerService: FlashRank initialization failed, falling back to heuristic scoring: {e}"
+            )
             self._ranker = None
             self._available = False
 
@@ -46,9 +48,9 @@ class RerankerService:
     def rerank(
         self,
         query: str,
-        documents: List[AdalDocument],
-        top_k: Optional[int] = None,
-    ) -> List[Tuple[AdalDocument, float]]:
+        documents: list[AdalDocument],
+        top_k: int | None = None,
+    ) -> list[tuple[AdalDocument, float]]:
         """Rerank candidate documents against the query using cross-encoder scores.
 
         Returns:
@@ -63,20 +65,22 @@ class RerankerService:
             return [(doc, 0.5) for doc in (documents[:top_k] if top_k else documents)]
 
         try:
-            passages: List[Dict[str, Any]] = []
-            doc_map: Dict[int, AdalDocument] = {}
+            passages: list[dict[str, Any]] = []
+            doc_map: dict[int, AdalDocument] = {}
 
             for idx, doc in enumerate(documents):
                 doc_map[idx] = doc
-                passages.append({
-                    "id": idx,
-                    "text": (doc.text or "")[:1200],
-                })
+                passages.append(
+                    {
+                        "id": idx,
+                        "text": (doc.text or "")[:1200],
+                    }
+                )
 
             req = RerankRequest(query=query, passages=passages)
             ranked_results = ranker.rerank(req)
 
-            scored_docs: List[Tuple[AdalDocument, float]] = []
+            scored_docs: list[tuple[AdalDocument, float]] = []
             for item in ranked_results:
                 doc_id = item.get("id")
                 score = float(item.get("score", 0.0))
