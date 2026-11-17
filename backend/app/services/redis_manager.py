@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional
 
 import redis
 from upstash_redis import Redis as UpstashRedis
@@ -18,38 +18,48 @@ REDIS_AVAILABLE = True
 class RedisCacheManager:
     """Enterprise Redis and Upstash caching layer with automatic failover to local memory."""
 
-    _instance: Optional['RedisCacheManager'] = None
+    _instance: Optional["RedisCacheManager"] = None
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(self, redis_url: str | None = None):
         if redis_url is not None:
             raw_url = redis_url.strip() if redis_url else None
         else:
             raw_url = os.getenv("REDIS_URL", "").strip() or None
         self.redis_url = raw_url
         self.upstash_rest_url = os.getenv("UPSTASH_REDIS_REST_URL", "").strip() or None
-        self.upstash_rest_token = os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip() or None
-        self._client: Optional[Union[redis.Redis, UpstashRedis]] = None
+        self.upstash_rest_token = (
+            os.getenv("UPSTASH_REDIS_REST_TOKEN", "").strip() or None
+        )
+        self._client: redis.Redis | UpstashRedis | None = None
         self._is_connected = False
-        self._local_cache: Dict[str, Tuple[float, Any]] = {}
+        self._local_cache: dict[str, tuple[float, Any]] = {}
 
         if (self.upstash_rest_url and self.upstash_rest_token) or self.redis_url:
             self._connect_redis()
         else:
-            log.info("RedisCacheManager: REDIS_URL and Upstash credentials not set. Using high-performance in-memory cache.")
+            log.info(
+                "RedisCacheManager: REDIS_URL and Upstash credentials not set. Using high-performance in-memory cache."
+            )
 
     def _connect_redis(self):
         """Initialize Redis connection (Upstash REST or standard Redis) with health ping and fallback."""
         # 1. Try Upstash REST API if credentials provided
         if self.upstash_rest_url and self.upstash_rest_token:
             try:
-                upstash_client = UpstashRedis(url=self.upstash_rest_url, token=self.upstash_rest_token)
+                upstash_client = UpstashRedis(
+                    url=self.upstash_rest_url, token=self.upstash_rest_token
+                )
                 upstash_client.ping()
                 self._client = upstash_client
                 self._is_connected = True
-                log.info("RedisCacheManager: Connected successfully to Upstash Redis via REST API.")
+                log.info(
+                    "RedisCacheManager: Connected successfully to Upstash Redis via REST API."
+                )
                 return
             except Exception as e:
-                log.warning(f"RedisCacheManager: Upstash connection failed ({e}). Checking REDIS_URL fallback.")
+                log.warning(
+                    f"RedisCacheManager: Upstash connection failed ({e}). Checking REDIS_URL fallback."
+                )
 
         # 2. Try standard REDIS_URL (supports Upstash rediss:// endpoints or local redis://)
         if self.redis_url:
@@ -63,16 +73,20 @@ class RedisCacheManager:
                 client.ping()
                 self._client = client
                 self._is_connected = True
-                log.info("RedisCacheManager: Connected successfully to Redis via TCP/SSL.")
+                log.info(
+                    "RedisCacheManager: Connected successfully to Redis via TCP/SSL."
+                )
                 return
             except Exception as e:
-                log.warning(f"RedisCacheManager: Could not connect to Redis ({e}). Falling back to local in-memory cache.")
+                log.warning(
+                    f"RedisCacheManager: Could not connect to Redis ({e}). Falling back to local in-memory cache."
+                )
 
         self._client = None
         self._is_connected = False
 
     @classmethod
-    def get_instance(cls) -> 'RedisCacheManager':
+    def get_instance(cls) -> "RedisCacheManager":
         """Singleton accessor for RedisCacheManager."""
         if cls._instance is None:
             cls._instance = cls()
@@ -87,7 +101,7 @@ class RedisCacheManager:
     def is_connected(self) -> bool:
         return self._is_connected and self._client is not None
 
-    def get(self, key: str) -> Optional[str]:
+    def get(self, key: str) -> str | None:
         """Fetch raw string value from Redis or local cache fallback."""
         if self.is_connected and self._client is not None:
             try:
@@ -120,7 +134,7 @@ class RedisCacheManager:
         return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _deserialize_dict(val: Any) -> Optional[Dict[str, Any]]:
+    def _deserialize_dict(val: Any) -> dict[str, Any] | None:
         """Safely deserialize string, bytes, or dict into Dict[str, Any]."""
         if val is None:
             return None
@@ -141,7 +155,7 @@ class RedisCacheManager:
         return None
 
     @staticmethod
-    def _deserialize_list_float(val: Any) -> Optional[List[float]]:
+    def _deserialize_list_float(val: Any) -> list[float] | None:
         """Safely deserialize string, bytes, or list into List[float]."""
         if val is None:
             return None
@@ -165,7 +179,7 @@ class RedisCacheManager:
     # Embedding Cache (text -> List[float])
     # -------------------------------------------------------------------------
 
-    def get_embedding(self, text: str) -> Optional[List[float]]:
+    def get_embedding(self, text: str) -> list[float] | None:
         """Retrieve cached embedding vector for text chunk or query."""
         key = f"emb:{self._hash_key(text)}"
         if self.is_connected and self._client is not None:
@@ -186,7 +200,7 @@ class RedisCacheManager:
             self._local_cache.pop(key, None)
         return None
 
-    def set_embedding(self, text: str, vector: List[float], ttl: int = 604800):
+    def set_embedding(self, text: str, vector: list[float], ttl: int = 604800):
         """Cache embedding vector (default TTL: 7 days)."""
         key = f"emb:{self._hash_key(text)}"
         if not vector:
@@ -206,7 +220,7 @@ class RedisCacheManager:
     # Query Response Cache (repo_slug + query -> {answer, rationale, contexts})
     # -------------------------------------------------------------------------
 
-    def get_query_cache(self, repo_slug: str, query: str) -> Optional[Dict[str, Any]]:
+    def get_query_cache(self, repo_slug: str, query: str) -> dict[str, Any] | None:
         """Retrieve precomputed RAG answer and contexts for identical query."""
         key = f"qcache:{repo_slug}:{self._hash_key(query)}"
         if self.is_connected and self._client is not None:
@@ -214,7 +228,9 @@ class RedisCacheManager:
                 val = self._client.get(key)
                 deserialized = self._deserialize_dict(val)
                 if deserialized is not None:
-                    log.info(f"RedisCacheManager: Query cache HIT for '{query[:40]}...' on {repo_slug}")
+                    log.info(
+                        f"RedisCacheManager: Query cache HIT for '{query[:40]}...' on {repo_slug}"
+                    )
                     return deserialized
             except Exception as e:
                 log.debug(f"Redis get_query_cache error: {e}")
@@ -223,12 +239,16 @@ class RedisCacheManager:
         if item:
             exp, val = item
             if exp == 0 or exp > time.time():
-                log.info(f"RedisCacheManager (local): Query cache HIT for '{query[:40]}...' on {repo_slug}")
+                log.info(
+                    f"RedisCacheManager (local): Query cache HIT for '{query[:40]}...' on {repo_slug}"
+                )
                 return self._deserialize_dict(val)
             self._local_cache.pop(key, None)
         return None
 
-    def set_query_cache(self, repo_slug: str, query: str, payload: Dict[str, Any], ttl: int = 3600):
+    def set_query_cache(
+        self, repo_slug: str, query: str, payload: dict[str, Any], ttl: int = 3600
+    ):
         """Cache RAG query response (default TTL: 1 hour)."""
         key = f"qcache:{repo_slug}:{self._hash_key(query)}"
         if not payload:
@@ -253,7 +273,9 @@ class RedisCacheManager:
         if self.is_connected and self._client is not None:
             try:
                 # SET key val NX EX timeout
-                return bool(self._client.set(key, "locked", nx=True, ex=timeout_seconds))
+                return bool(
+                    self._client.set(key, "locked", nx=True, ex=timeout_seconds)
+                )
             except Exception as e:
                 log.debug(f"Redis acquire_lock error: {e}")
 
@@ -277,7 +299,9 @@ class RedisCacheManager:
 
         self._local_cache.pop(key, None)
 
-    def set_job_status(self, job_id: str, status_data: Dict[str, Any], ttl: int = 86400):
+    def set_job_status(
+        self, job_id: str, status_data: dict[str, Any], ttl: int = 86400
+    ):
         """Store repository background indexing progress (0-100%, stage, details)."""
         key = f"job:{job_id}"
         payload = dict(status_data)
@@ -292,7 +316,7 @@ class RedisCacheManager:
         exp = time.time() + ttl if ttl > 0 else 0
         self._local_cache[key] = (exp, payload)
 
-    def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
+    def get_job_status(self, job_id: str) -> dict[str, Any] | None:
         """Retrieve background indexing progress."""
         key = f"job:{job_id}"
         if self.is_connected and self._client is not None:
@@ -329,7 +353,9 @@ class RedisCacheManager:
                     status = data.get("status")
                     if status in ("processing", "pending"):
                         data["status"] = "failed"
-                        data["error"] = "Job interrupted due to abrupt server restart or crash."
+                        data["error"] = (
+                            "Job interrupted due to abrupt server restart or crash."
+                        )
                         data["reconciled_at"] = now
                         self._local_cache[k] = (exp, data)
                         reconciled += 1
@@ -337,28 +363,43 @@ class RedisCacheManager:
         # Handle remote Redis if connected
         if self.is_connected and self._client is not None:
             try:
-                keys = []
-                if hasattr(self._client, "scan_iter"):
-                    keys = list(self._client.scan_iter(match="job:*", count=100))
-                elif hasattr(self._client, "keys"):
-                    keys = self._client.keys("job:*")
+                client: Any = self._client
+                raw_keys: list[Any] = []
+                scan_iter_fn: Any = getattr(client, "scan_iter", None)
+                if callable(scan_iter_fn):
+                    iter_res: Any = scan_iter_fn(match="job:*", count=100)
+                    raw_keys = list(iter_res)
+                else:
+                    keys_fn: Any = getattr(client, "keys", None)
+                    if callable(keys_fn):
+                        res_keys: Any = keys_fn("job:*")
+                        raw_keys = list(res_keys) if res_keys else []
 
-                for key in keys:
-                    val = self._client.get(key)
+                for raw_key in raw_keys:
+                    key_str: str = (
+                        raw_key.decode("utf-8")
+                        if isinstance(raw_key, bytes)
+                        else str(raw_key)
+                    )
+                    val = client.get(key_str)
                     data = self._deserialize_dict(val)
                     if data and data.get("status") in ("processing", "pending"):
                         data["status"] = "failed"
-                        data["error"] = "Job interrupted due to abrupt server restart or crash."
+                        data["error"] = (
+                            "Job interrupted due to abrupt server restart or crash."
+                        )
                         data["reconciled_at"] = now
-                        ttl = self._client.ttl(key)
+                        ttl = client.ttl(key_str)
                         ex = ttl if ttl and ttl > 0 else 86400
-                        self._client.set(key, json.dumps(data), ex=ex)
+                        client.set(key_str, json.dumps(data), ex=ex)
                         reconciled += 1
             except Exception as e:
                 log.warning(f"Error during Redis job reconciliation: {e}")
 
         if reconciled > 0:
-            log.warning(f"Startup Job Reconciliation: Cleaned up {reconciled} orphaned in-flight jobs.")
+            log.warning(
+                f"Startup Job Reconciliation: Cleaned up {reconciled} orphaned in-flight jobs."
+            )
         return reconciled
 
     # -------------------------------------------------------------------------
@@ -389,7 +430,7 @@ class RedisCacheManager:
         exp = time.time() + ttl if ttl > 0 else 0
         self._local_cache[key] = (exp, payload)
 
-    def get_ingest_checkpoint(self, repo_slug: str) -> Optional[Dict[str, Any]]:
+    def get_ingest_checkpoint(self, repo_slug: str) -> dict[str, Any] | None:
         """Retrieve last saved ingestion checkpoint for resumable indexing."""
         key = f"checkpoint:{repo_slug}"
         if self.is_connected and self._client is not None:
