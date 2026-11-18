@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   Send,
   Plus,
   Trash2,
-  CheckCircle2,
   FolderGit2,
   LogOut,
+  X,
+  Loader2,
 } from "lucide-react";
 import ChatMessage from "./ChatMessage";
 import { api, Document, AgentStep } from "../services/api";
@@ -37,6 +39,11 @@ const STORAGE_KEY = "github_chat_conversations";
 const ACTIVE_CONV_KEY = "github_chat_active_conversation";
 
 const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const stateRepoUrl = (location.state as { repoUrl?: string } | null)?.repoUrl;
+  const effectiveRepoUrl = initialRepoUrl || stateRepoUrl;
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
@@ -47,39 +54,83 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
     null,
   );
   const [agentStatus, setAgentStatus] = useState<string>("");
+  const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
+  const [newRepoUrlInput, setNewRepoUrlInput] = useState("");
+  const [isInitializingRepo, setIsInitializingRepo] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Load conversations from localStorage on mount
+  // Load conversations from localStorage or initialize with effectiveRepoUrl
   useEffect(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       const savedActiveId = localStorage.getItem(ACTIVE_CONV_KEY);
+      let parsed: Conversation[] = [];
 
       if (saved) {
-        const parsed: Conversation[] = JSON.parse(saved);
-        setConversations(parsed);
-
-        if (savedActiveId && parsed.some((c) => c.id === savedActiveId)) {
-          setActiveConversationId(savedActiveId);
-        } else if (parsed.length > 0) {
-          setActiveConversationId(parsed[0].id);
+        try {
+          parsed = JSON.parse(saved);
+        } catch {
+          parsed = [];
         }
-      } else if (initialRepoUrl) {
-        const newConv: Conversation = {
-          id: crypto.randomUUID(),
-          repoUrl: initialRepoUrl,
-          title:
-            initialRepoUrl.split("/").slice(-2).join("/") || initialRepoUrl,
-          messages: [],
-          createdAt: new Date().toISOString(),
-        };
-        setConversations([newConv]);
-        setActiveConversationId(newConv.id);
+      }
+
+      let activeConv: Conversation | undefined;
+
+      if (effectiveRepoUrl) {
+        const existingConv =
+          (savedActiveId &&
+            parsed.find(
+              (c) => c.id === savedActiveId && c.repoUrl === effectiveRepoUrl,
+            )) ||
+          parsed.find((c) => c.repoUrl === effectiveRepoUrl);
+
+        if (existingConv) {
+          setConversations(parsed);
+          setActiveConversationId(existingConv.id);
+          activeConv = existingConv;
+        } else {
+          const newConv: Conversation = {
+            id: crypto.randomUUID(),
+            repoUrl: effectiveRepoUrl,
+            title:
+              effectiveRepoUrl.split("/").slice(-2).join("/") || effectiveRepoUrl,
+            messages: [],
+            createdAt: new Date().toISOString(),
+          };
+          const updated = [newConv, ...parsed];
+          setConversations(updated);
+          setActiveConversationId(newConv.id);
+          activeConv = newConv;
+        }
+      } else if (parsed.length > 0) {
+        setConversations(parsed);
+        const selectedId =
+          savedActiveId && parsed.some((c) => c.id === savedActiveId)
+            ? savedActiveId
+            : parsed[0].id;
+        setActiveConversationId(selectedId);
+        activeConv = parsed.find((c) => c.id === selectedId);
+      } else {
+        navigate("/", { replace: true });
+        return;
+      }
+
+      // Sync backend conversation context on load/refresh if messages exist
+      if (activeConv && activeConv.messages.length > 0) {
+        const contextMessages = activeConv.messages
+          .filter((m) => m.content.trim().length > 0)
+          .map((m) => ({ role: m.role, content: m.content }));
+
+        if (contextMessages.length > 0) {
+          api.setContext(contextMessages).catch((err) =>
+            console.warn("[Init Context] Could not restore context:", err),
+          );
+        }
       }
     } catch (e) {
       console.error("Failed to load conversations from localStorage:", e);
     }
-  }, [initialRepoUrl]);
+  }, [effectiveRepoUrl, navigate]);
 
   // Save conversations to localStorage whenever they change
   useEffect(() => {
@@ -147,16 +198,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
 
   // Send a message using real-time SSE streaming
   const handleSendMessage = useCallback(async () => {
+    const trimmedInput = inputMessage.trim();
     if (
-      !inputMessage.trim() ||
-      !activeConversation ||
-      !activeConversationId ||
+      !trimmedInput ||
       isLoading
     ) {
       return;
     }
 
-    const userContent = inputMessage.trim();
+    if (!activeConversation || !activeConversationId) {
+      toast.error("No active conversation found. Please initialize a repository first.");
+      return;
+    }
+
+    const userContent = trimmedInput;
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: "user",
@@ -292,12 +347,71 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
     }
   }, [inputMessage, activeConversation, activeConversationId, isLoading]);
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
     }
   };
+
+  const handleLogout = () => {
+    if (onLogout) {
+      onLogout();
+    } else {
+      navigate("/");
+    }
+  };
+
+  const handleConnectNewRepo = async (targetUrl?: string) => {
+    const urlToUse = (targetUrl || newRepoUrlInput).trim();
+    if (!urlToUse) {
+      toast.error("Please enter a valid GitHub repository URL");
+      return;
+    }
+    if (!urlToUse.startsWith("http://") && !urlToUse.startsWith("https://")) {
+      toast.error("Repository URL must start with https://");
+      return;
+    }
+
+    setIsInitializingRepo(true);
+    try {
+      await api.initRepo(urlToUse);
+      toast.success("Repository connected! Starting new chat session...");
+
+      try {
+        await api.clearMemory();
+      } catch (e) {
+        console.warn("Failed to clear backend memory:", e);
+      }
+
+      const repoTitle =
+        urlToUse.split("/").slice(-2).join("/") || urlToUse;
+
+      const newConv: Conversation = {
+        id: crypto.randomUUID(),
+        repoUrl: urlToUse,
+        title: repoTitle,
+        messages: [],
+        createdAt: new Date().toISOString(),
+      };
+
+      setConversations((prev) => [newConv, ...prev]);
+      setActiveConversationId(newConv.id);
+      setIsRepoModalOpen(false);
+      setNewRepoUrlInput("");
+    } catch (error) {
+      console.error("Failed to connect new repo:", error);
+      const errMsg =
+        error instanceof Error ? error.message : "Failed to initialize repository";
+      toast.error(errMsg);
+    } finally {
+      setIsInitializingRepo(false);
+    }
+  };
+
+  const recentRepos = Array.from(
+    new Set(conversations.map((c) => c.repoUrl)),
+  ).filter((url) => Boolean(url && url.trim()));
 
   const handleNewChat = async () => {
     if (!activeConversation) return;
@@ -330,7 +444,7 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(ACTIVE_CONV_KEY);
       setActiveConversationId(null);
-      if (onLogout) onLogout();
+      handleLogout();
     } else if (activeConversationId === convId) {
       setActiveConversationId(updated[0].id);
     }
@@ -345,22 +459,36 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
             <FolderGit2 className="h-6 w-6 text-gray-300" />
             <span className="font-semibold text-gray-200">GithubChat</span>
           </div>
-          {onLogout && (
+          <div className="flex items-center gap-1">
             <button
-              onClick={onLogout}
-              title="Switch Repository"
+              onClick={() => setIsRepoModalOpen(true)}
+              title="Connect a new repository"
+              className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-gray-200 transition-colors">
+              <FolderGit2 className="h-4 w-4" />
+            </button>
+            <button
+              onClick={handleLogout}
+              title="Return to Home"
               className="p-1.5 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-gray-200 transition-colors">
               <LogOut className="h-4 w-4" />
             </button>
-          )}
+          </div>
         </div>
 
-        <div className="p-3">
+        <div className="p-3 space-y-2">
           <button
             onClick={handleNewChat}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg text-sm font-medium transition-colors border border-gray-700">
+            title="Start a new chat for this repository"
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors shadow-sm">
             <Plus className="h-4 w-4" />
             <span>New Chat</span>
+          </button>
+          <button
+            onClick={() => setIsRepoModalOpen(true)}
+            title="Switch repository or connect a new URL"
+            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg text-sm font-medium transition-colors border border-gray-700">
+            <FolderGit2 className="h-4 w-4 text-blue-400" />
+            <span>Switch / New Repo</span>
           </button>
         </div>
 
@@ -377,7 +505,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
                   ? "bg-gray-800 text-white font-medium"
                   : "text-gray-400 hover:bg-gray-800/60 hover:text-gray-200"
               }`}>
-              <span className="truncate flex-1">{conv.title}</span>
+              <div className="truncate flex-1 pr-2">
+                <div className="truncate font-medium">{conv.title}</div>
+                <div className="text-[10px] text-gray-500 font-mono truncate">
+                  {conv.repoUrl.replace("https://github.com/", "")}
+                </div>
+              </div>
               <button
                 onClick={(e) => handleDeleteConversation(conv.id, e)}
                 title="Delete conversation"
@@ -389,15 +522,20 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
         </div>
 
         {activeConversation && (
-          <div className="p-3 border-t border-gray-800 bg-gray-900/50">
+          <div className="p-3 border-t border-gray-800 bg-gray-900/50 flex items-center justify-between">
             <div
-              className="text-xs text-gray-500 truncate"
+              className="text-xs text-gray-500 truncate min-w-0 flex-1 mr-2"
               title={activeConversation.repoUrl}>
-              Active Repo:{" "}
-              <span className="text-gray-300 font-mono">
-                {activeConversation.repoUrl}
-              </span>
+              <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold">Active Repo</div>
+              <div className="text-gray-300 font-mono truncate text-xs">
+                {activeConversation.repoUrl.replace("https://github.com/", "")}
+              </div>
             </div>
+            <button
+              onClick={() => setIsRepoModalOpen(true)}
+              className="text-xs text-blue-400 hover:text-blue-300 font-medium px-2 py-1 rounded hover:bg-gray-800 transition-colors flex-shrink-0">
+              Change
+            </button>
           </div>
         )}
       </div>
@@ -414,10 +552,12 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
               {activeConversation?.repoUrl}
             </p>
           </div>
-          <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-800/40 px-3 py-1.5 rounded-full font-medium">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            <span>Ready</span>
-          </div>
+          <button
+            onClick={() => setIsRepoModalOpen(true)}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white rounded-lg text-xs font-medium border border-gray-700 transition-colors shadow-sm">
+            <FolderGit2 className="h-3.5 w-3.5 text-blue-400" />
+            <span>Switch Repo</span>
+          </button>
         </div>
 
         {/* Message list */}
@@ -457,43 +597,129 @@ const ChatPage: React.FC<ChatPageProps> = ({ initialRepoUrl, onLogout }) => {
         {/* Input area */}
         <div className="p-4 border-t border-gray-800 bg-gray-900">
           <div className="max-w-4xl mx-auto">
-            <div className="flex gap-3 items-end bg-gray-800/80 border border-gray-700/80 rounded-2xl p-3 shadow-xl focus-within:border-blue-500/80 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all backdrop-blur-sm">
+            <div className="flex gap-3 items-center bg-gray-800/80 border border-gray-700/80 rounded-2xl p-3 shadow-xl focus-within:border-blue-500/80 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all backdrop-blur-sm">
               <textarea
                 value={inputMessage}
                 onChange={(e) => setInputMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyDown}
                 placeholder="Ask a question about this repository's code, architecture, or flow... (Shift + Enter for new line)"
-                rows={3}
-                className="flex-1 px-3 py-1.5 bg-transparent text-white placeholder-gray-500 focus:outline-none resize-none font-sans text-sm min-h-[76px] max-h-40 leading-relaxed scrollbar-thin scrollbar-thumb-gray-700"
+                rows={2}
+                className="flex-1 px-3 py-1.5 bg-transparent text-white placeholder-gray-500 focus:outline-none resize-none font-sans text-sm min-h-[50px] max-h-40 leading-relaxed scrollbar-thin scrollbar-thumb-gray-700"
               />
               <button
+                type="button"
                 onClick={handleSendMessage}
                 disabled={!inputMessage.trim() || isLoading}
-                className="h-11 w-11 flex items-center justify-center bg-blue-600 hover:bg-blue-500 text-white rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-900/40 flex-shrink-0 mb-0.5">
+                aria-label="Send message"
+                className="h-11 w-11 flex items-center justify-center bg-blue-600 hover:bg-blue-500 text-white rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-all shadow-lg shadow-blue-900/40 flex-shrink-0">
                 <Send className="h-5 w-5" />
               </button>
-            </div>
-            <div className="flex justify-between items-center px-2 mt-2 text-[11px] text-gray-500 font-mono">
-              <span>
-                Press{" "}
-                <kbd className="px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-gray-400 text-[10px]">
-                  Enter
-                </kbd>{" "}
-                to send,{" "}
-                <kbd className="px-1.5 py-0.5 bg-gray-800 border border-gray-700 rounded text-gray-400 text-[10px]">
-                  Shift + Enter
-                </kbd>{" "}
-                for multi-line
-              </span>
-              <span>
-                {inputMessage.length > 0
-                  ? `${inputMessage.length} characters`
-                  : ""}
-              </span>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Switch / New Repository Modal */}
+      {isRepoModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl relative space-y-5 animate-in fade-in duration-150">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-xl text-blue-400">
+                  <FolderGit2 className="h-5 w-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">
+                    Connect New Repository
+                  </h3>
+                  <p className="text-xs text-gray-400">
+                    Input a GitHub URL to index code and start a new chat
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  if (!isInitializingRepo) setIsRepoModalOpen(false);
+                }}
+                disabled={isInitializingRepo}
+                className="p-1 text-gray-400 hover:text-gray-200 rounded-lg hover:bg-gray-800 transition-colors disabled:opacity-50">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div>
+              <label
+                htmlFor="new-repo-url-input"
+                className="block text-xs font-medium text-gray-300 mb-2">
+                GitHub Repository URL
+              </label>
+              <input
+                id="new-repo-url-input"
+                type="text"
+                autoFocus
+                disabled={isInitializingRepo}
+                value={newRepoUrlInput}
+                onChange={(e) => setNewRepoUrlInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !isInitializingRepo) {
+                    e.preventDefault();
+                    handleConnectNewRepo();
+                  }
+                }}
+                placeholder="https://github.com/owner/repository"
+                className="w-full px-3.5 py-2.5 bg-gray-800 border border-gray-700 rounded-xl text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all font-mono disabled:opacity-50"
+              />
+            </div>
+
+            {recentRepos.length > 0 && (
+              <div>
+                <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                  Previously Used Repositories
+                </div>
+                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto">
+                  {recentRepos.map((url) => (
+                    <button
+                      key={url}
+                      type="button"
+                      disabled={isInitializingRepo}
+                      onClick={() => setNewRepoUrlInput(url)}
+                      className="text-xs px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 font-mono truncate max-w-xs transition-colors text-left disabled:opacity-50">
+                      {url.replace("https://github.com/", "")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                disabled={isInitializingRepo}
+                onClick={() => setIsRepoModalOpen(false)}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-xl text-sm font-medium transition-colors border border-gray-700 disabled:opacity-50">
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={!newRepoUrlInput.trim() || isInitializingRepo}
+                onClick={() => handleConnectNewRepo()}
+                className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-medium transition-colors shadow-lg shadow-blue-900/30 disabled:opacity-50 disabled:cursor-not-allowed">
+                {isInitializingRepo ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Indexing Repository...</span>
+                  </>
+                ) : (
+                  <>
+                    <FolderGit2 className="h-4 w-4" />
+                    <span>Connect & Start Chat</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
