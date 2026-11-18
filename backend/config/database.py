@@ -1,9 +1,9 @@
 """PostgreSQL database engine configuration, schema initialization, and session management."""
 
-from contextlib import contextmanager
 import logging
 import os
-from typing import Generator
+from collections.abc import Generator
+from contextlib import contextmanager
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 log = logging.getLogger(__name__)
 
-load_dotenv()
+load_dotenv(verbose=True)
 
 # Quota and rate limit settings
 GUEST_MAX_REQUESTS: int = 50
@@ -94,7 +94,9 @@ def init_db():
         Base.metadata.create_all(bind=active_engine)
         log.info("Database tables initialized successfully on PostgreSQL.")
     except Exception as e:
-        log.error(f"Database table initialization failed on PostgreSQL: {e}", exc_info=True)
+        log.error(
+            f"Database table initialization failed on PostgreSQL: {e}", exc_info=True
+        )
         raise
 
 
