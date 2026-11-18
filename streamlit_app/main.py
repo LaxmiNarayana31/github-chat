@@ -2,12 +2,18 @@ import logging
 import os
 import sys
 import traceback
-from typing import Any
 import uuid
 import warnings
+from typing import Any
 
-from dotenv import load_dotenv
 import streamlit as st
+from dotenv import load_dotenv
+
+from backend.app.config.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GROQ_MODEL
+from backend.app.rag.rag import RAG
+from streamlit_app.components.message_view import render_messages, render_sources
+from streamlit_app.components.sidebar import render_sidebar
+from streamlit_app.styles import apply_custom_styles
 
 # Ensure project root, backend, and app dir are in sys.path
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,12 +22,6 @@ BACKEND_DIR = os.path.join(PROJECT_ROOT, "backend")
 for p in [PROJECT_ROOT, BACKEND_DIR, APP_DIR]:
     if p not in sys.path:
         sys.path.insert(0, p)
-
-from backend.app.config.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GROQ_MODEL
-from backend.app.rag.rag import RAG
-from streamlit_app.components.message_view import render_messages, render_sources
-from streamlit_app.components.sidebar import render_sidebar
-from streamlit_app.styles import apply_custom_styles
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +55,9 @@ def sync_secrets() -> None:
                 "GEMINI_EMBEDDING_MODEL",
                 "GROQ_MODEL",
                 "GEMINI_EMBEDDING_DIMENSIONS",
+                "UPSTASH_REDIS_REST_URL",
+                "UPSTASH_REDIS_REST_TOKEN",
+                "REDIS_URL",
             ]
             for k in secret_keys:
                 if k in st.secrets and not os.getenv(k):
