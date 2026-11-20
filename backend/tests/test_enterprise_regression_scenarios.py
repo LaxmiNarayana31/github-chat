@@ -90,6 +90,7 @@ class TestPolyglotMonorepoScenario:
         chunks = chunker._chunk_python(huge_fn, "pipeline.py")
         assert len(chunks) >= 1
         for c in chunks:
+            assert c.meta_data is not None
             lines = c.meta_data.get("line_range", [])
             assert len(lines) == 2
             assert lines[0] <= lines[1]
@@ -126,23 +127,22 @@ class TestGitCDCDeltaScenario:
             ]
 
             delta_summary = sync_git_delta(
-                local_repo_path="/tmp/test_repo",
-                old_commit="commit_aaa",
+                repo_url="https://github.com/myorg/myrepo",
+                local_path="/tmp/test_repo",
+                previous_commit="commit_aaa",
                 new_commit="commit_bbb",
                 collection_name="col_test_repo",
-                qdrant_mgr=mock_qdrant,
-                embedder=mock_embedder,
+                qdrant_manager=mock_qdrant,
             )
 
             # Both modified and deleted files must have old vectors purged
-            assert mock_qdrant.delete_points_by_file.call_count == 2
-            mock_qdrant.delete_points_by_file.assert_any_call("col_test_repo", "backend/app/main.py")
-            mock_qdrant.delete_points_by_file.assert_any_call("col_test_repo", "backend/old_service.py")
+            assert mock_qdrant.delete_points_by_file_path.call_count == 2
+            mock_qdrant.delete_points_by_file_path.assert_any_call("col_test_repo", "backend/app/main.py")
+            mock_qdrant.delete_points_by_file_path.assert_any_call("col_test_repo", "backend/old_service.py")
 
-            # Only modified file re-indexed
-            assert delta_summary["modified"] == 1
-            assert delta_summary["deleted"] == 1
-            assert delta_summary["reindexed_chunks"] == 1
+            assert len(delta_summary["modified_files"]) == 1
+            assert len(delta_summary["deleted_files"]) == 1
+            assert len(delta_summary["updated_docs"]) == 1
 
 
 # ============================================================================
@@ -217,11 +217,11 @@ class TestConcurrencyAndDeduplicationScenario:
 
             # User 1 initializes
             rag_u1 = RAG(entity_id="optum_user_1", process_id="sess_101")
-            rag_u1.prepare_retriever(repo_url=test_url)
+            rag_u1.prepare_retriever(repo_url_or_path=test_url)
 
             # User 2 initializes same repo
             rag_u2 = RAG(entity_id="optum_user_2", process_id="sess_102")
-            rag_u2.prepare_retriever(repo_url=test_url)
+            rag_u2.prepare_retriever(repo_url_or_path=test_url)
 
             # Neither call should trigger re-indexing
             assert mock_qdrant.index_documents.call_count == 0
@@ -239,10 +239,10 @@ class TestHighAvailabilityFallbackScenario:
     def test_redis_graceful_degradation_on_connection_failure(self):
         """Verify RedisCacheManager operations return None or skip silently if Redis is unreachable."""
         mgr = RedisCacheManager.get_instance()
-        with patch.object(mgr, "is_available", return_value=False):
+        with patch.object(mgr, "is_connected", return_value=False):
             assert mgr.get_embedding("some query text") is None
             assert mgr.set_embedding("some query text", [0.1, 0.2]) is False
-            assert mgr.get_repo_map("fake/repo") is None
+            assert mgr.get_query_cache("fake/repo", "query") is None
             assert mgr.get_job_status("fake_job") is None
 
     def test_qdrant_in_memory_fallback_when_unconfigured(self):

@@ -67,8 +67,10 @@ def test_qdrant_symbol_lookup_and_file_deletion():
     # Deterministic symbol lookup
     matched = manager.lookup_symbol(col_name, "compute_tree_sitter_hash")
     assert len(matched) == 1
-    assert matched[0].meta_data["symbol_name"] == "compute_tree_sitter_hash"
-    assert matched[0].meta_data["file_path"] == "core/hasher.py"
+    meta = matched[0].meta_data
+    assert meta is not None
+    assert meta["symbol_name"] == "compute_tree_sitter_hash"
+    assert meta["file_path"] == "core/hasher.py"
 
     # Negative lookup
     non_existent = manager.lookup_symbol(col_name, "non_existent_symbol")
@@ -284,7 +286,9 @@ def test_qdrant_subsystem_path_scoping():
         col, "net_packet_alloc", path_prefix="drivers/net"
     )
     assert len(net_matches) == 1
-    assert "drivers/net" in net_matches[0].meta_data["file_path"]
+    meta = net_matches[0].meta_data
+    assert meta is not None
+    assert "drivers/net" in meta["file_path"]
 
 
 def test_repomap_mega_repo_capping():

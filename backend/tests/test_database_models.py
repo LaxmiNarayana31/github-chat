@@ -46,8 +46,8 @@ def test_database_session_context_manager():
     with get_db_session() as session:
         fetched = session.query(Repository).filter_by(repo_slug=slug).first()
         assert fetched is not None
-        assert fetched.collection_name == f"repo_{slug}"
-        assert fetched.total_chunks == 42
+        assert str(fetched.collection_name) == f"repo_{slug}"
+        assert int(fetched.total_chunks) == 42
 
 
 def test_database_models_crud():
@@ -80,7 +80,7 @@ def test_database_models_crud():
     with get_db_session() as session:
         job_res = session.query(IndexingJob).filter_by(job_id=job_id).first()
         assert job_res is not None
-        assert job_res.status == "completed"
+        assert str(job_res.status) == "completed"
 
         turn_res = (
             session.query(ConversationTurn).filter_by(session_id=session_id).first()
